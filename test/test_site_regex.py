@@ -5,13 +5,8 @@ Unit tests for ``regex.site`` — rewriting the site's title before matching.
 examples, but ``filterseries()`` only ever *assigned* ``site_regex_match`` /
 ``site_regex_replace``; nothing read them back. These cover the wiring.
 
-The awkward part is that the check cannot stay on yt-dlp's ``matchtitle``
-option. yt-dlp tests ``matchtitle`` against the raw title — the very title the
-regex exists to rewrite — so the entries a site regex is meant to rescue are
-dropped before ``ytsearch`` sees them. When a site regex is configured the
-check moves into a ``match_filter`` callable, which runs at the same points
-(including the cheap pre-filter over unresolved playlist entries) but sees the
-rewritten title.
+The check lives in the local candidate matcher. yt-dlp extracts flat entries
+once, then ``ytsearch`` applies the site rewrite while matching each episode.
 """
 import os
 import re
@@ -109,59 +104,31 @@ class TestEpisodeTitleMatches(unittest.TestCase):
                 stream_harvestarr.MatchRules(site_regex=STRIP_SUFFIX)))
 
 
-class TestSearchOptsNeverUsesMatchtitle(unittest.TestCase):
-    """The title check is always ours, never yt-dlp's matchtitle option."""
+class TestSearchOpts(unittest.TestCase):
+    """Source options do not contain episode-specific filters."""
 
-    def opts(self, site_regex):
-        return stream_harvestarr.StreamHarvester.ytdl_eps_search_opts(
-            _NoDebug(), upperescape('Ben Kadow'), False, rules=stream_harvestarr.MatchRules(site_regex=site_regex))
-
-    def test_matchtitle_is_never_set(self):
-        """One null title in a playlist makes matchtitle raise TypeError,
-        which ignoreerrors turns into a None result for every entry."""
-        self.assertNotIn('matchtitle', self.opts(None))
-        self.assertNotIn('matchtitle', self.opts(STRIP_PARENS))
-
-    def test_filter_is_installed_either_way(self):
-        self.assertTrue(callable(self.opts(None)['match_filter']))
-        self.assertTrue(callable(self.opts(STRIP_PARENS)['match_filter']))
-
-    def test_filter_rejects_a_non_matching_title(self):
-        f = self.opts(STRIP_PARENS)['match_filter']
-        self.assertIsNotNone(f({'title': 'Jamie Foy', 'url': 'https://youtu.be/x'}))
-
-    def test_filter_keeps_a_title_the_regex_rescues(self):
-        f = stream_harvestarr.StreamHarvester.ytdl_eps_search_opts(
-            _NoDebug(), upperescape('Ben Kadow') + '$', False,
-            rules=stream_harvestarr.MatchRules(site_regex=STRIP_PARENS))['match_filter']
-        self.assertIsNone(f({'title': 'Ben Kadow (Extended Cut)', 'url': 'https://youtu.be/x'}))
-
-    def test_filter_still_excludes_shorts(self):
-        """The shorts filter is composed, not replaced."""
-        f = self.opts(STRIP_PARENS)['match_filter']
-        self.assertIsNotNone(
-            f({'title': 'Ben Kadow', 'url': 'https://www.youtube.com/shorts/abc'}))
-
-    def test_filter_defers_when_the_title_is_not_known_yet(self):
-        """Pre-filter passes on entries with no title; a later pass decides."""
-        f = self.opts(STRIP_PARENS)['match_filter']
-        self.assertIsNone(f({'url': 'https://youtu.be/x'}, True))
+    def test_options_are_independent_of_episode_title(self):
+        opts = stream_harvestarr.StreamHarvester.ytdl_eps_search_opts(
+            _NoDebug(), False)
+        self.assertEqual(opts['extract_flat'], 'in_playlist')
+        self.assertNotIn('matchtitle', opts)
+        self.assertNotIn('match_filter', opts)
 
 
 class TestYtsearchUsesSiteRegex(unittest.TestCase):
 
     def setUp(self):
         self._real_ydl = stream_harvestarr.yt_dlp.YoutubeDL
-        stream_harvestarr.PLAYLIST_CACHE.clear()
-        stream_harvestarr.PLAYLIST_REFRESHED.clear()
+        self.client = object.__new__(stream_harvestarr.StreamHarvester)
+        self.client.playlist_cache = stream_harvestarr.PlaylistCache()
 
     def tearDown(self):
         stream_harvestarr.yt_dlp.YoutubeDL = self._real_ydl
 
     def ytsearch(self, result, matchtitle, site_regex):
         stream_harvestarr.yt_dlp.YoutubeDL = lambda opts: FakeYoutubeDL(result)
-        return stream_harvestarr.StreamHarvester.ytsearch(
-            None, {}, PLAYLIST, matchtitle,
+        return self.client.ytsearch(
+            {}, PLAYLIST, matchtitle,
             stream_harvestarr.MatchRules(site_regex=site_regex))
 
     def test_verification_applies_the_same_rewrite(self):
@@ -171,10 +138,10 @@ class TestYtsearchUsesSiteRegex(unittest.TestCase):
             'webpage_url': 'https://www.youtube.com/watch?v=YrmakZiZTOE',
         }]}
         pattern = upperescape('Ben Kadow') + '$'
-        self.assertEqual(self.ytsearch(result, pattern, None), (False, ''))
+        self.assertIsNone(self.ytsearch(result, pattern, None))
         self.assertEqual(
             self.ytsearch(result, pattern, STRIP_PARENS),
-            (True, 'https://www.youtube.com/watch?v=YrmakZiZTOE'))
+            'https://www.youtube.com/watch?v=YrmakZiZTOE')
 
 
 class TestFilterseriesCompilesOnce(unittest.TestCase):

@@ -35,8 +35,7 @@ class FakeYoutubeDL(object):
 class PlaylistCacheTestCase(unittest.TestCase):
 
     def setUp(self):
-        stream_harvestarr.PLAYLIST_CACHE.clear()
-        stream_harvestarr.PLAYLIST_REFRESHED.clear()
+        self.cache = stream_harvestarr.PlaylistCache()
         self.real_ydl = stream_harvestarr.yt_dlp.YoutubeDL
         FakeYoutubeDL.calls = []
         FakeYoutubeDL.urls = []
@@ -53,26 +52,77 @@ class PlaylistCacheTestCase(unittest.TestCase):
         self.assertEqual(
             stream_harvestarr.video_playlist_url('https://www.youtube.com/@VICE/search?query=x'),
             'https://www.youtube.com/@VICE/search?query=x')
+        self.assertEqual(
+            stream_harvestarr.video_playlist_url('https://www.youtube.com/@VICE/videos'),
+            'https://www.youtube.com/@VICE/videos')
+        self.assertEqual(
+            stream_harvestarr.video_playlist_url('https://example.com/@VICE'),
+            'https://example.com/@VICE')
 
-    def test_refreshes_once_and_merges_new_entries(self):
+    def test_refreshes_once_and_replaces_entries(self):
         playlist = 'https://www.youtube.com/@VICE'
         opts = {'playlistreverse': False}
         first = {'entries': [{'url': 'https://youtu.be/old', 'title': 'old'}]}
         second = {'entries': [{'url': 'https://youtu.be/new', 'title': 'new'}]}
         FakeYoutubeDL.results = [first, second]
 
-        first_scan = stream_harvestarr.StreamHarvester.cached_playlist_entries(opts, playlist)
-        same_scan = stream_harvestarr.StreamHarvester.cached_playlist_entries(opts, playlist)
+        first_scan = self.cache.get(opts, playlist)
+        same_scan = self.cache.get(opts, playlist)
         self.assertEqual(first_scan, same_scan)
         self.assertEqual(len(FakeYoutubeDL.calls), 1)
         self.assertEqual(FakeYoutubeDL.urls, [playlist + '/videos'])
 
-        stream_harvestarr.PLAYLIST_REFRESHED.clear()
-        next_scan = stream_harvestarr.StreamHarvester.cached_playlist_entries(opts, playlist)
+        self.cache.begin_scan()
+        next_scan = self.cache.get(opts, playlist)
         self.assertEqual(
             [entry['url'] for entry in next_scan],
-            ['https://youtu.be/old', 'https://youtu.be/new'])
-        self.assertEqual(FakeYoutubeDL.calls[1]['playlistend'], 50)
+            ['https://youtu.be/new'])
+        self.assertNotIn('playlistend', FakeYoutubeDL.calls[1])
+
+    def test_failed_refresh_keeps_last_good_entries(self):
+        playlist = 'https://www.youtube.com/@VICE'
+        opts = {'playlistreverse': False}
+        FakeYoutubeDL.results = [
+            {'entries': [{'url': 'https://youtu.be/old', 'title': 'old'}]},
+            None,
+        ]
+
+        self.assertEqual(len(self.cache.get(opts, playlist)), 1)
+        self.cache.begin_scan()
+        self.assertEqual(
+            [entry['url'] for entry in self.cache.get(opts, playlist)],
+            ['https://youtu.be/old'])
+
+    def test_playlist_reverse_is_applied_without_duplicate_extraction(self):
+        playlist = 'https://www.youtube.com/playlist?list=TEST'
+        FakeYoutubeDL.results = [{'entries': [
+            {'url': 'https://youtu.be/one', 'title': 'one'},
+            {'url': 'https://youtu.be/two', 'title': 'two'},
+        ]}]
+
+        self.assertEqual(
+            [entry['url'] for entry in self.cache.get(
+                {'playlistreverse': False}, playlist)],
+            ['https://youtu.be/one', 'https://youtu.be/two'])
+        self.assertEqual(
+            [entry['url'] for entry in self.cache.get(
+                {'playlistreverse': True}, playlist)],
+            ['https://youtu.be/two', 'https://youtu.be/one'])
+        self.assertEqual(len(FakeYoutubeDL.calls), 1)
+
+    def test_begin_scan_prunes_removed_sources(self):
+        first = 'https://www.youtube.com/playlist?list=FIRST'
+        second = 'https://www.youtube.com/playlist?list=SECOND'
+        FakeYoutubeDL.results = [
+            {'entries': [{'url': 'https://youtu.be/one'}]},
+            {'entries': [{'url': 'https://youtu.be/two'}]},
+        ]
+        self.cache.get({}, first)
+        self.cache.get({}, second)
+
+        self.cache.begin_scan({first})
+        self.assertEqual(len(self.cache.entries), 1)
+        self.assertEqual(len(FakeYoutubeDL.calls), 2)
 
 
 if __name__ == '__main__':

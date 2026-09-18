@@ -54,6 +54,26 @@ class ExplodingYoutubeDL(object):
         raise RuntimeError(self.message)
 
 
+class ScriptedYoutubeDL(object):
+    instances = []
+    outcomes = []
+
+    def __init__(self, options):
+        self.options = options
+
+    def __enter__(self):
+        type(self).instances.append(self)
+        return self
+
+    def __exit__(self, *exc_info):
+        return False
+
+    def download(self, urls):
+        outcome = type(self).outcomes.pop(0)
+        if isinstance(outcome, BaseException):
+            raise outcome
+
+
 class DownloadErrorTestCase(unittest.TestCase):
 
     def setUp(self):
@@ -79,10 +99,11 @@ class DownloadErrorTestCase(unittest.TestCase):
         c.rate_limit_sleep = 1800
         c.rate_limit_count = 0
         c.current_backoff = 1800
+        c.video_403_count = 0
         c.backoff_enabled = True
         c.backoff_multiplier = 1.5
         c.backoff_max = 5400
-        c.ytsearch = lambda *a, **kw: (True, 'https://www.youtube.com/watch?v=YrmakZiZTOE')
+        c.ytsearch = lambda *a, **kw: 'https://www.youtube.com/watch?v=YrmakZiZTOE'
         c.rescanseries = lambda series_id: None
         stream_harvestarr.yt_dlp.YoutubeDL = lambda opts: ExplodingYoutubeDL(message)
         return c
@@ -112,10 +133,45 @@ class DownloadErrorTestCase(unittest.TestCase):
     def test_three_video_403s_stop_the_scan(self):
         """Repeated forbidden responses must not hot-loop every episode."""
         c = self.client('HTTP Error 403: Forbidden')
-        c.download(SERIES, list(EPISODES))
-        c.download(SERIES, list(EPISODES))
-        c.download(SERIES, list(EPISODES))
+        attempts = []
+
+        def fail(*args, **kwargs):
+            attempts.append(1)
+            raise RuntimeError('HTTP Error 403: Forbidden')
+
+        c.download_video = fail
+        episodes = [dict(EPISODES[0], episodeNumber=number) for number in range(1, 5)]
+        c.download(SERIES, episodes)
+        self.assertEqual(len(attempts), 3)
         self.assertEqual(c.video_403_count, 3)
+
+    def test_subtitle_failure_retries_without_subtitle_options(self):
+        c = self.client('unused')
+        ScriptedYoutubeDL.instances = []
+        ScriptedYoutubeDL.outcomes = [
+            stream_harvestarr.yt_dlp.utils.DownloadError('subtitle HTTP 429'),
+            None,
+        ]
+        stream_harvestarr.yt_dlp.YoutubeDL = ScriptedYoutubeDL
+        options = {
+            'writesubtitles': True,
+            'writeautomaticsub': True,
+            'subtitleslangs': ['en'],
+            'postprocessors': [
+                {'key': 'FFmpegSubtitlesConvertor', 'format': 'srt'},
+                {'key': 'FFmpegEmbedSubtitle'},
+                {'key': 'Exec'},
+            ],
+        }
+
+        c.download_video('https://youtu.be/x', options, 'Episode')
+
+        self.assertEqual(len(ScriptedYoutubeDL.instances), 2)
+        fallback = ScriptedYoutubeDL.instances[1].options
+        self.assertNotIn('writesubtitles', fallback)
+        self.assertNotIn('writeautomaticsub', fallback)
+        self.assertNotIn('subtitleslangs', fallback)
+        self.assertEqual(fallback['postprocessors'], [{'key': 'Exec'}])
 
     def test_backoff_is_capped(self):
         c = self.client('rate limit')
@@ -127,7 +183,7 @@ class DownloadErrorTestCase(unittest.TestCase):
         """One bad episode must not end the run."""
         c = self.client('boom')
         seen = []
-        c.ytsearch = lambda *a, **kw: (seen.append(1), (True, 'https://youtu.be/x'))[1]
+        c.ytsearch = lambda *a, **kw: (seen.append(1), 'https://youtu.be/x')[1]
         episodes = [dict(EPISODES[0], title='One'), dict(EPISODES[0], title='Two')]
         c.download(SERIES, episodes)
         self.assertEqual(len(seen), 2)
