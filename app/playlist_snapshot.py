@@ -29,15 +29,12 @@ class PlaylistSnapshot:
             raise
 
     def __len__(self):
-        """Return the number of entries in the snapshot."""
         return self._count
 
     def __iter__(self):
-        """Iterate over entries in source order."""
         return self._read('ASC')
 
     def __reversed__(self):
-        """Iterate over entries in reverse source order."""
         return self._read('DESC')
 
     def _read(self, order):
