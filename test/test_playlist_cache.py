@@ -2,6 +2,7 @@
 import os
 import sys
 import unittest
+from unittest.mock import Mock
 
 APP_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'app'))
 sys.path.insert(0, APP_DIR)
@@ -58,6 +59,13 @@ class PlaylistCacheTestCase(unittest.TestCase):
         self.assertEqual(
             stream_harvestarr.video_playlist_url('https://example.com/@VICE'),
             'https://example.com/@VICE')
+        self.assertEqual(
+            stream_harvestarr.video_search_url(
+                'https://www.youtube.com/@VICE/videos', 'Episode 1'),
+            'https://www.youtube.com/@VICE/search?query=Episode+1')
+        self.assertIsNone(
+            stream_harvestarr.video_search_url(
+                'https://example.com/@VICE', 'Episode 1'))
 
     def test_refreshes_once_and_replaces_entries(self):
         playlist = 'https://www.youtube.com/@VICE'
@@ -123,6 +131,32 @@ class PlaylistCacheTestCase(unittest.TestCase):
         self.cache.begin_scan({first})
         self.assertEqual(len(self.cache.entries), 1)
         self.assertEqual(len(FakeYoutubeDL.calls), 2)
+
+
+class EpisodeSearchTestCase(unittest.TestCase):
+
+    def test_channel_search_is_bounded_before_full_scan(self):
+        client = object.__new__(stream_harvestarr.StreamHarvester)
+        client.ytdl_eps_search_opts = Mock(return_value={'playlistreverse': False})
+        client.ytsearch = Mock(side_effect=[None, 'https://youtu.be/full-scan'])
+        series = {
+            'url': 'https://www.youtube.com/@VICE/videos',
+            'playlistreverse': False,
+        }
+        episode = {'title': 'Episode 1'}
+
+        result = client.find_episode(series, episode)
+
+        self.assertEqual(result, 'https://youtu.be/full-scan')
+        first_options = client.ytsearch.call_args_list[0].args[0]
+        self.assertEqual(first_options['playlistend'], 20)
+        self.assertTrue(first_options['lazy_playlist'])
+        self.assertEqual(
+            client.ytsearch.call_args_list[0].args[1],
+            'https://www.youtube.com/@VICE/search?query=Episode+1')
+        self.assertEqual(
+            client.ytsearch.call_args_list[1].args[1],
+            'https://www.youtube.com/@VICE/videos')
 
 
 if __name__ == '__main__':

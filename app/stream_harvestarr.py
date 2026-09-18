@@ -34,6 +34,7 @@ SCANINTERVAL = 60
 # node (installed on every image, including 386/armv7 where deno is not
 # packaged for Alpine).  See issue #96.
 JS_RUNTIMES = {'deno': {'path': None}, 'node': {'path': None}}
+CHANNEL_SEARCH_LIMIT = 20
 
 SHORT_URL_RE = re.compile(r'/shorts/', re.IGNORECASE)
 
@@ -206,6 +207,31 @@ def video_playlist_url(playlist):
     if re.fullmatch(r'/(?:@[^/]+|channel/[^/]+|user/[^/]+|c/[^/]+)', path):
         return parsed._replace(path=path + '/videos').geturl()
     return playlist
+
+
+def video_search_url(playlist, query):
+    """Resolve a YouTube channel URL to its bounded search tab."""
+    try:
+        parsed = urllib.parse.urlsplit(playlist)
+    except ValueError:
+        return None
+
+    if parsed.scheme not in ('http', 'https'):
+        return None
+    if parsed.hostname not in {'youtube.com', 'www.youtube.com', 'm.youtube.com'}:
+        return None
+
+    path = parsed.path.rstrip('/')
+    if path.endswith('/videos'):
+        path = path[:-len('/videos')].rstrip('/')
+    if not re.fullmatch(r'/(?:@[^/]+|channel/[^/]+|user/[^/]+|c/[^/]+)', path):
+        return None
+
+    return parsed._replace(
+        path=path + '/search',
+        query=urllib.parse.urlencode({'query': query}),
+        fragment='',
+    ).geturl()
 
 
 def entry_url(entry):
@@ -927,12 +953,19 @@ class StreamHarvester:
             username=series.get('username'),
             password=series.get('password'),
         )
-        return self.ytsearch(
-            options,
-            series['url'],
-            upperescape(episode['title']),
-            self._episode_rules(series, episode),
-        )
+        matchtitle = upperescape(episode['title'])
+        rules = self._episode_rules(series, episode)
+        search_url = video_search_url(series['url'], episode['title'])
+        if search_url:
+            search_options = dict(options)
+            search_options.update({
+                'lazy_playlist': True,
+                'playlistend': CHANNEL_SEARCH_LIMIT,
+            })
+            match = self.ytsearch(search_options, search_url, matchtitle, rules)
+            if match:
+                return match
+        return self.ytsearch(options, series['url'], matchtitle, rules)
 
     def download_options(self, series, episode):
         """Build yt-dlp options for one video download."""
