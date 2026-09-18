@@ -34,6 +34,14 @@ SCANINTERVAL = 60
 # packaged for Alpine).  See issue #96.
 JS_RUNTIMES = {'deno': {'path': None}, 'node': {'path': None}}
 
+# yt-dlp extraction is the expensive part of a search. Keep the entries across
+# scans and refresh each configured playlist once per scan instead of once per
+# missing episode.
+PLAYLIST_CACHE = {}
+PLAYLIST_REFRESHED = set()
+CHANNEL_URL_RE = re.compile(r'/(?:channel/[^/?]+|@[^/?]+)$', re.IGNORECASE)
+SHORT_URL_RE = re.compile(r'/shorts/', re.IGNORECASE)
+
 # yt-dlp results that are a *collection* rather than one video. Three shapes
 # reach ytsearch(): a resolved playlist ('playlist' / 'multi_video'), an
 # unresolved reference to one (_type 'url' whose url is a playlist or channel
@@ -222,6 +230,14 @@ def make_title_filter(matchtitle, rules=DEFAULT_RULES, base_filter=None):
             return '"{}" did not match the episode'.format(title)
         return None
     return _filter
+
+
+def video_playlist_url(playlist):
+    """Resolve a bare YouTube channel to its videos tab."""
+    channel = playlist.rstrip('/')
+    if CHANNEL_URL_RE.search(channel):
+        return channel + '/videos'
+    return playlist
 
 
 # Keys filterseries() and merge_service_config() actually read. Anything else
@@ -847,31 +863,74 @@ class StreamHarvester(object):
             logger.debug('yt-dlp opts configured for episode matching')
         return ytdlopts
 
+    @staticmethod
+    def cached_playlist_entries(ydl_opts, playlist):
+        """Return flat entries, refreshing a playlist at most once per scan."""
+        cache_key = (
+            playlist,
+            ydl_opts.get('playlistreverse'),
+            ydl_opts.get('cookiefile'),
+            ydl_opts.get('username'),
+            ydl_opts.get('password'),
+        )
+        if cache_key not in PLAYLIST_REFRESHED:
+            PLAYLIST_REFRESHED.add(cache_key)
+            playlist_opts = dict(ydl_opts)
+            playlist_opts.pop('matchtitle', None)
+            playlist_opts.pop('match_filter', None)
+            playlist_opts['extract_flat'] = 'in_playlist'
+            if cache_key in PLAYLIST_CACHE:
+                playlist_opts['playlistend'] = 50
+            try:
+                with yt_dlp.YoutubeDL(playlist_opts) as ydl:
+                    result = ydl.extract_info(
+                        video_playlist_url(playlist),
+                        download=False
+                    )
+            except Exception as error:
+                logger.error('Playlist extraction failed for %s: %s', playlist, error)
+                result = None
+
+            if result is not None:
+                entries = result.get('entries')
+                entries = list(entries) if entries is not None else [result]
+                entries = [
+                    entry for entry in entries
+                    if entry and (entry.get('webpage_url') or entry.get('url'))
+                ]
+                previous = PLAYLIST_CACHE.get(cache_key, [])
+                seen = {
+                    entry.get('webpage_url') or entry.get('url')
+                    for entry in entries
+                }
+                previous = [
+                    entry for entry in previous
+                    if (entry.get('webpage_url') or entry.get('url')) not in seen
+                ]
+                if ydl_opts.get('playlistreverse'):
+                    entries = entries + previous
+                else:
+                    entries = previous + entries
+                PLAYLIST_CACHE[cache_key] = entries
+
+        return PLAYLIST_CACHE.get(cache_key, [])
+
     def ytsearch(self, ydl_opts, playlist, matchtitle=None, rules=DEFAULT_RULES):
         try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                result = ydl.extract_info(
-                    playlist,
-                    download=False
-                )
+            candidates = StreamHarvester.cached_playlist_entries(ydl_opts, playlist)
         except Exception as e:
             logger.error(e)
             return False, ''
         else:
-            # ignoreerrors makes yt-dlp swallow errors and return None: a null
-            # entry title trips its own matchtitle regex.
-            if result is None:
-                logger.error('No metadata returned for {}'.format(playlist))
-                return False, ''
             # The caller passes the same pattern object it built the opts from,
             # so our check can't drift from the one yt-dlp applied. The fallback
             # covers callers that only set it in the opts dict.
             if matchtitle is None:
                 matchtitle = ydl_opts.get('matchtitle')
-            entries = result.get('entries')
-            candidates = list(entries) if entries else [result]
             for entry in candidates:
                 if entry is None:
+                    continue
+                if SHORT_URL_RE.search(entry.get('webpage_url') or entry.get('url') or ''):
                     continue
                 if not is_single_video(entry):
                     logger.debug('  Skipping collection result: {}'.format(
@@ -1014,9 +1073,26 @@ class StreamHarvester(object):
                                 logger.debug('yt-dlp opts configured for downloading')
                             try:
                                 with yt_dlp.YoutubeDL(ytdl_format_options) as ydl:
-                                     ydl.download([dlurl])
+                                    try:
+                                        ydl.download([dlurl])
+                                    except yt_dlp.utils.DownloadError as error:
+                                        if 'subtitle' not in str(error).lower():
+                                            raise
+                                        logger.warning(
+                                            'Subtitles unavailable for %s; retrying video without subtitles',
+                                            eps['title']
+                                        )
+                                        fallback_options = dict(ytdl_format_options)
+                                        for key in (
+                                            'writesubtitles', 'writeautomaticsub',
+                                            'subtitleslangs', 'postprocessors',
+                                        ):
+                                            fallback_options.pop(key, None)
+                                        with yt_dlp.YoutubeDL(fallback_options) as fallback:
+                                            fallback.download([dlurl])
                                 self.rescanseries(ser['id'])
                                 logger.info("      Downloaded - {}".format(eps['title']))
+                                self.video_403_count = 0
                                 # Reset backoff on successful download
                                 if self.rate_limit_count > 0:
                                     logger.info("      Rate limit recovered - resetting backoff counter")
@@ -1035,6 +1111,13 @@ class StreamHarvester(object):
                             # exponential backoff below could never run.
                             except Exception as err:
                                 error_msg = str(err)
+                                if 'http error 403' in error_msg.lower():
+                                    self.video_403_count = getattr(self, 'video_403_count', 0) + 1
+                                    if self.video_403_count >= 3:
+                                        logger.warning(
+                                            'Three video 403s; stopping this scan and retrying later'
+                                        )
+                                        return
                                 # Check if this is a rate limit error
                                 if 'rate-limited' in error_msg.lower() or 'rate limit' in error_msg.lower() or 'try again later' in error_msg.lower():
                                     self.rate_limit_count += 1
@@ -1076,6 +1159,7 @@ class StreamHarvester(object):
 
 
 def main():
+    PLAYLIST_REFRESHED.clear()
     client = StreamHarvester()
     series = client.filterseries()
     episodes = client.getseriesepisodes(series)

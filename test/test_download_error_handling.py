@@ -109,6 +109,14 @@ class DownloadErrorTestCase(unittest.TestCase):
         self.assertEqual(self.slept, [1800, 2700])
         self.assertEqual(c.rate_limit_count, 2)
 
+    def test_three_video_403s_stop_the_scan(self):
+        """Repeated forbidden responses must not hot-loop every episode."""
+        c = self.client('HTTP Error 403: Forbidden')
+        c.download(SERIES, list(EPISODES))
+        c.download(SERIES, list(EPISODES))
+        c.download(SERIES, list(EPISODES))
+        self.assertEqual(c.video_403_count, 3)
+
     def test_backoff_is_capped(self):
         c = self.client('rate limit')
         c.rate_limit_count = 40

@@ -152,6 +152,8 @@ class TestYtsearchUsesSiteRegex(unittest.TestCase):
 
     def setUp(self):
         self._real_ydl = stream_harvestarr.yt_dlp.YoutubeDL
+        stream_harvestarr.PLAYLIST_CACHE.clear()
+        stream_harvestarr.PLAYLIST_REFRESHED.clear()
 
     def tearDown(self):
         stream_harvestarr.yt_dlp.YoutubeDL = self._real_ydl

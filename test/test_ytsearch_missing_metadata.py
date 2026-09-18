@@ -53,6 +53,8 @@ class TestYtsearchMissingMetadata(unittest.TestCase):
 
     def setUp(self):
         self._real_ydl = stream_harvestarr.yt_dlp.YoutubeDL
+        stream_harvestarr.PLAYLIST_CACHE.clear()
+        stream_harvestarr.PLAYLIST_REFRESHED.clear()
 
     def ytsearch(self, **kwargs):
         stream_harvestarr.yt_dlp.YoutubeDL = lambda opts: FakeYoutubeDL(**kwargs)
