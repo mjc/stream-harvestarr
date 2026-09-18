@@ -12,6 +12,7 @@ from youtube_playlist import BaseYoutubeTabIE, YoutubeTabIE
 
 class YoutubePlaylistTests(unittest.TestCase):
     def test_rich_grid_preserves_entries_and_continuation(self):
+        """Verify rich grid preserves entries and continuation."""
         page = {'contents': [
             {'richItemRenderer': {'content': {'videoRenderer': {
                 'videoId': f'{index:011d}',
@@ -38,6 +39,7 @@ class YoutubePlaylistTests(unittest.TestCase):
             lookup.assert_called_once_with(page)
 
     def test_other_page_layouts_use_upstream(self):
+        """Verify other page layouts use upstream."""
         extractor = YoutubeTabIE()
         for page in ({}, {'contents': []}, {'contents': [
             {'richItemRenderer': {}}, {'itemSectionRenderer': {}}
@@ -52,6 +54,7 @@ class YoutubePlaylistTests(unittest.TestCase):
                 fallback.assert_called_once_with(page, continuation)
 
     def test_registered_under_upstream_key(self):
+        """Verify registered under upstream key."""
         with yt_dlp.YoutubeDL({'quiet': True}) as ydl:
             extractor = YoutubeTabIE()
             ydl.add_info_extractor(extractor)

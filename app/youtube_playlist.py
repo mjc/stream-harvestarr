@@ -6,6 +6,7 @@ from yt_dlp.extractor.youtube import YoutubeTabIE as BaseYoutubeTabIE
 class YoutubeTabIE(BaseYoutubeTabIE):
     # Keep the upstream class name so YoutubeDL registers this under YoutubeTab.
     def _extract_entries(self, parent_renderer, continuation_list):
+        """Yield page entries while resolving rich-grid continuation once per page."""
         contents = parent_renderer.get('contents')
         if not isinstance(contents, list) or not contents or not all(
             isinstance(item, dict)

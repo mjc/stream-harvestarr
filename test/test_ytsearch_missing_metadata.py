@@ -40,9 +40,11 @@ class FakeYoutubeDL(object):
         return False
 
     def add_info_extractor(self, extractor):
+        """Record the extractor registered by the fake client."""
         self.extractor = extractor
 
     def extract_info(self, url, download=False, process=True):
+        """Return the configured fake extraction result."""
         if self.exc is not None:
             raise self.exc
         return self.result
@@ -55,11 +57,13 @@ class TestYtsearchMissingMetadata(unittest.TestCase):
         stream_harvestarr.yt_dlp.YoutubeDL = self._real_ydl
 
     def setUp(self):
+        """Set up fixtures for this test case."""
         self._real_ydl = stream_harvestarr.yt_dlp.YoutubeDL
         self.client = object.__new__(stream_harvestarr.StreamHarvester)
         self.client.playlist_cache = stream_harvestarr.PlaylistCache()
 
     def ytsearch(self, **kwargs):
+        """Return the configured test search result."""
         stream_harvestarr.yt_dlp.YoutubeDL = lambda opts: FakeYoutubeDL(**kwargs)
         return self.client.ytsearch({}, PLAYLIST)
 

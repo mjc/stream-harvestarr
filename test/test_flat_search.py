@@ -57,9 +57,11 @@ class FakeYoutubeDL(object):
         return False
 
     def add_info_extractor(self, extractor):
+        """Record the extractor registered by the fake client."""
         self.extractor = extractor
 
     def extract_info(self, url, download=False, process=True):
+        """Return the configured fake extraction result."""
         return self.result
 
 
@@ -76,6 +78,7 @@ class _NoDebug(object):
 class TestSearchRunsFlat(unittest.TestCase):
 
     def opts(self):
+        """Provide the test data for this scenario."""
         return stream_harvestarr.StreamHarvester.ytdl_eps_search_opts(
             _NoDebug(), False)
 
@@ -91,6 +94,7 @@ class TestSearchRunsFlat(unittest.TestCase):
 class TestFlatEntriesResolve(unittest.TestCase):
 
     def setUp(self):
+        """Set up fixtures for this test case."""
         self._real_ydl = stream_harvestarr.yt_dlp.YoutubeDL
         self.client = object.__new__(stream_harvestarr.StreamHarvester)
         self.client.playlist_cache = stream_harvestarr.PlaylistCache()
@@ -99,6 +103,7 @@ class TestFlatEntriesResolve(unittest.TestCase):
         stream_harvestarr.yt_dlp.YoutubeDL = self._real_ydl
 
     def ytsearch(self, result, episode='Ben Kadow'):
+        """Return the configured test search result."""
         stream_harvestarr.yt_dlp.YoutubeDL = lambda opts: FakeYoutubeDL(result)
         pattern = upperescape(episode)
         return self.client.ytsearch({}, SEARCH_URL, pattern)
@@ -111,12 +116,14 @@ class TestFlatEntriesResolve(unittest.TestCase):
             'https://www.youtube.com/watch?v=YrmakZiZTOE')
 
     def test_flat_playlist_is_still_refused(self):
+        """Verify flat playlist is still refused."""
         self.assertFalse(stream_harvestarr.is_single_video(FLAT_PLAYLIST))
         self.assertEqual(
             self.ytsearch({'entries': [FLAT_PLAYLIST]}, "Epicly Later'd"),
             None)
 
     def test_playlist_before_video_still_picks_the_video(self):
+        """Verify playlist before video still picks the video."""
         self.assertEqual(
             self.ytsearch({'entries': [FLAT_PLAYLIST, FLAT_VIDEO]}),
             'https://www.youtube.com/watch?v=YrmakZiZTOE')

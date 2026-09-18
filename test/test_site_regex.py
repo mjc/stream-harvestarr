@@ -41,9 +41,11 @@ class FakeYoutubeDL(object):
         return False
 
     def add_info_extractor(self, extractor):
+        """Record the extractor registered by the fake client."""
         self.extractor = extractor
 
     def extract_info(self, url, download=False, process=True):
+        """Return the configured fake extraction result."""
         return self.result
 
 
@@ -111,6 +113,7 @@ class TestSearchOpts(unittest.TestCase):
     """Source options do not contain episode-specific filters."""
 
     def test_options_are_independent_of_episode_title(self):
+        """Verify options are independent of episode title."""
         opts = stream_harvestarr.StreamHarvester.ytdl_eps_search_opts(
             _NoDebug(), False)
         self.assertEqual(opts['extract_flat'], 'in_playlist')
@@ -121,14 +124,17 @@ class TestSearchOpts(unittest.TestCase):
 class TestYtsearchUsesSiteRegex(unittest.TestCase):
 
     def setUp(self):
+        """Set up fixtures for this test case."""
         self._real_ydl = stream_harvestarr.yt_dlp.YoutubeDL
         self.client = object.__new__(stream_harvestarr.StreamHarvester)
         self.client.playlist_cache = stream_harvestarr.PlaylistCache()
 
     def tearDown(self):
+        """Restore the real yt-dlp client after the test."""
         stream_harvestarr.yt_dlp.YoutubeDL = self._real_ydl
 
     def ytsearch(self, result, matchtitle, site_regex):
+        """Return the configured test search result."""
         stream_harvestarr.yt_dlp.YoutubeDL = lambda opts: FakeYoutubeDL(result)
         return self.client.ytsearch(
             {}, PLAYLIST, matchtitle,

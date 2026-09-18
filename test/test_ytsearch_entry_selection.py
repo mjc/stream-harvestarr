@@ -78,15 +78,18 @@ class FakeYoutubeDL(object):
         return False
 
     def add_info_extractor(self, extractor):
+        """Record the extractor registered by the fake client."""
         self.extractor = extractor
 
     def extract_info(self, url, download=False, process=True):
+        """Return the configured fake extraction result."""
         return self.result
 
 
 class YtsearchTestCase(unittest.TestCase):
 
     def setUp(self):
+        """Set up fixtures for this test case."""
         self._real_ydl = stream_harvestarr.yt_dlp.YoutubeDL
         self.client = object.__new__(stream_harvestarr.StreamHarvester)
         self.client.playlist_cache = stream_harvestarr.PlaylistCache()
@@ -95,6 +98,7 @@ class YtsearchTestCase(unittest.TestCase):
         stream_harvestarr.yt_dlp.YoutubeDL = self._real_ydl
 
     def ytsearch(self, result, episode_title=None):
+        """Return the configured test search result."""
         stream_harvestarr.yt_dlp.YoutubeDL = lambda opts: FakeYoutubeDL(result)
         opts = {'matchtitle': upperescape(episode_title)} if episode_title else {}
         return self.client.ytsearch(opts, SEARCH_URL)
@@ -104,6 +108,7 @@ class TestCollectionEntriesRejected(YtsearchTestCase):
     """A playlist or channel is never an episode."""
 
     def test_unresolved_playlist_reference_is_skipped(self):
+        """Verify unresolved playlist reference is skipped."""
         result = {'entries': [PLAYLIST_ENTRY, BEN_KADOW]}
         self.assertEqual(
             self.ytsearch(result, 'Ben Kadow'),
@@ -111,6 +116,7 @@ class TestCollectionEntriesRejected(YtsearchTestCase):
         )
 
     def test_resolved_playlist_is_skipped(self):
+        """Verify resolved playlist is skipped."""
         result = {'entries': [RESOLVED_PLAYLIST_ENTRY, BEN_KADOW]}
         self.assertEqual(
             self.ytsearch(result, 'Ben Kadow'),
@@ -132,6 +138,7 @@ class TestCollectionEntriesRejected(YtsearchTestCase):
         self.assertIsNone(self.ytsearch(result, 'Lizard King'))
 
     def test_channel_videos_tab_is_not_found(self):
+        """Verify channel videos tab is not found."""
         result = {'entries': [{
             '_type': 'url',
             'ie_key': 'YoutubeTab',
@@ -163,6 +170,7 @@ class TestTitleReverified(YtsearchTestCase):
         )
 
     def test_no_entry_matches_is_not_found(self):
+        """Verify no entry matches is not found."""
         result = {'entries': [JAMIE_FOY]}
         self.assertIsNone(self.ytsearch(result, 'Ben Kadow'))
 

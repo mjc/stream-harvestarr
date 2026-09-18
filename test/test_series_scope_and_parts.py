@@ -146,6 +146,7 @@ class TestRulesAppliedLocally(unittest.TestCase):
     """The shared candidate matcher applies both series rules."""
 
     def candidate_matches(self, title, **kw):
+        """Provide the test data for this scenario."""
         return stream_harvestarr.title_matches(
             {'title': title, 'url': 'https://youtu.be/x'},
             upperescape('Ricky Oyola'),
@@ -153,14 +154,17 @@ class TestRulesAppliedLocally(unittest.TestCase):
         )
 
     def test_part_is_rejected(self):
+        """Verify part is rejected."""
         self.assertFalse(self.candidate_matches(
             "Epicly Later'd: Ricky Oyola (Part 1/5)", allow_parts=False))
 
     def test_wrong_series_is_rejected(self):
+        """Verify wrong series is rejected."""
         self.assertFalse(self.candidate_matches(
             'Ricky Oyola | Let It Kill You', require=REQUIRE_SHOW))
 
     def test_good_candidate_survives_both(self):
+        """Verify good candidate survives both."""
         self.assertTrue(self.candidate_matches(
             "Epicly Later'd: Ricky Oyola", require=REQUIRE_SHOW,
             allow_parts=False))

@@ -19,30 +19,37 @@ class FakeYoutubeDL(object):
     results = []
 
     def __init__(self, opts):
+        """Initialize the test fixture."""
         self.opts = opts
 
     def __enter__(self):
+        """Enter the fake client context."""
         type(self).calls.append(self.opts)
         return self
 
     def __exit__(self, *exc_info):
+        """Exit the fake client context."""
         return False
 
     def add_info_extractor(self, extractor):
+        """Record the extractor registered by the fake client."""
         self.extractor = extractor
 
     def extract_info(self, url, download=False, process=True):
+        """Return the configured fake extraction result."""
         type(self).urls.append(url)
         self.opts['process'] = process
         return type(self).results.pop(0)
 
     def process_ie_result(self, result, download=False):
+        """Return the configured fake processed result."""
         return type(self).results.pop(0)
 
 
 class PlaylistCacheTestCase(unittest.TestCase):
 
     def setUp(self):
+        """Set up fixtures for this test case."""
         self.cache = stream_harvestarr.PlaylistCache()
         self.real_ydl = stream_harvestarr.yt_dlp.YoutubeDL
         FakeYoutubeDL.calls = []
@@ -51,9 +58,11 @@ class PlaylistCacheTestCase(unittest.TestCase):
         stream_harvestarr.yt_dlp.YoutubeDL = FakeYoutubeDL
 
     def tearDown(self):
+        """Release fixtures created by this test case."""
         stream_harvestarr.yt_dlp.YoutubeDL = self.real_ydl
 
     def test_bare_channel_uses_videos_tab(self):
+        """Verify bare channel uses videos tab."""
         self.assertEqual(
             stream_harvestarr.video_playlist_url('https://www.youtube.com/@VICE'),
             'https://www.youtube.com/@VICE/videos')
@@ -75,6 +84,7 @@ class PlaylistCacheTestCase(unittest.TestCase):
                 'https://example.com/@VICE', 'Episode 1'))
 
     def test_refreshes_once_and_replaces_entries(self):
+        """Verify refreshes once and replaces entries."""
         playlist = 'https://www.youtube.com/@VICE'
         opts = {'playlistreverse': False}
         first = {'entries': [{'url': 'https://youtu.be/old', 'title': 'old'}]}
@@ -95,6 +105,7 @@ class PlaylistCacheTestCase(unittest.TestCase):
         self.assertNotIn('playlistend', FakeYoutubeDL.calls[1])
 
     def test_failed_refresh_keeps_last_good_entries(self):
+        """Verify failed refresh keeps last good entries."""
         playlist = 'https://www.youtube.com/@VICE'
         opts = {'playlistreverse': False}
         FakeYoutubeDL.results = [
@@ -109,6 +120,7 @@ class PlaylistCacheTestCase(unittest.TestCase):
             ['https://youtu.be/old'])
 
     def test_playlist_reverse_is_applied_without_duplicate_extraction(self):
+        """Verify playlist reverse is applied without duplicate extraction."""
         playlist = 'https://www.youtube.com/playlist?list=TEST'
         FakeYoutubeDL.results = [{'entries': [
             {'url': 'https://youtu.be/one', 'title': 'one'},
@@ -126,6 +138,7 @@ class PlaylistCacheTestCase(unittest.TestCase):
         self.assertEqual(len(FakeYoutubeDL.calls), 1)
 
     def test_begin_scan_prunes_removed_sources(self):
+        """Verify begin scan prunes removed sources."""
         first = 'https://www.youtube.com/playlist?list=FIRST'
         second = 'https://www.youtube.com/playlist?list=SECOND'
         FakeYoutubeDL.results = [
@@ -140,7 +153,9 @@ class PlaylistCacheTestCase(unittest.TestCase):
         self.assertEqual(len(FakeYoutubeDL.calls), 2)
 
     def test_later_page_failure_preserves_complete_snapshot(self):
+        """Verify later page failure preserves complete snapshot."""
         def broken_pages():
+            """Provide a partial page followed by an extraction failure."""
             yield {'url': 'https://youtu.be/partial', 'title': 'Partial'}
             raise RuntimeError('second page failed')
 
@@ -157,9 +172,11 @@ class PlaylistCacheTestCase(unittest.TestCase):
         self.assertEqual(list(current), [{'url': 'https://youtu.be/old', 'title': 'Old'}])
 
     def test_raw_search_limit_does_not_truncate_full_enumeration(self):
+        """Verify raw search limit does not truncate full enumeration."""
         seen = []
 
         def pages():
+            """Provide a repeatable stream of fake playlist entries."""
             for number in range(25):
                 seen.append(number)
                 yield {'url': f'https://youtu.be/{number}', 'title': str(number)}
@@ -175,11 +192,13 @@ class PlaylistCacheTestCase(unittest.TestCase):
         self.assertFalse(FakeYoutubeDL.calls[0]['process'])
 
     def test_non_youtube_sources_keep_normal_processing(self):
+        """Verify non youtube sources keep normal processing."""
         FakeYoutubeDL.results = [{'entries': [{'url': 'https://example.com/video'}]}]
         self.cache.get({}, 'https://example.com/playlist')
         self.assertTrue(FakeYoutubeDL.calls[0]['process'])
 
     def test_raw_tab_redirect_is_resolved_before_caching(self):
+        """Verify raw tab redirect is resolved before caching."""
         FakeYoutubeDL.results = [
             {'_type': 'url', 'url': 'https://www.youtube.com/playlist?list=redirect'},
             {'entries': [{'url': 'https://youtu.be/episode', 'title': 'Episode'}]},
@@ -193,6 +212,7 @@ class PlaylistCacheTestCase(unittest.TestCase):
 class EpisodeSearchTestCase(unittest.TestCase):
 
     def test_channel_search_is_bounded_before_full_scan(self):
+        """Verify channel search is bounded before full scan."""
         client = object.__new__(stream_harvestarr.StreamHarvester)
         client.ytdl_eps_search_opts = Mock(return_value={'playlistreverse': False})
         options_seen = []
@@ -200,6 +220,7 @@ class EpisodeSearchTestCase(unittest.TestCase):
         results = iter((None, None, 'https://youtu.be/full-scan'))
 
         def ytsearch(options, url, *args):
+            """Return the next staged channel-search result."""
             options_seen.append(dict(options))
             urls_seen.append(url)
             return next(results)

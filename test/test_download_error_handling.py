@@ -59,16 +59,20 @@ class ScriptedYoutubeDL(object):
     outcomes = []
 
     def __init__(self, options):
+        """Initialize the test fixture."""
         self.options = options
 
     def __enter__(self):
+        """Enter the fake client context."""
         type(self).instances.append(self)
         return self
 
     def __exit__(self, *exc_info):
+        """Exit the fake client context."""
         return False
 
     def download(self, urls):
+        """Record the requested fake download."""
         outcome = type(self).outcomes.pop(0)
         if isinstance(outcome, BaseException):
             raise outcome
@@ -87,6 +91,7 @@ class DownloadErrorTestCase(unittest.TestCase):
         stream_harvestarr.time.sleep = self._real_sleep
 
     def client(self, message):
+        """Provide the test data for this scenario."""
         c = object.__new__(stream_harvestarr.StreamHarvester)
         c.debug = False
         c.ytdl_format = 'best'
@@ -124,6 +129,7 @@ class DownloadErrorTestCase(unittest.TestCase):
         self.assertEqual(c.rate_limit_count, 1)
 
     def test_second_rate_limit_backs_off_further(self):
+        """Verify repeated rate limits increase the backoff delay."""
         c = self.client('rate-limited')
         c.download(SERIES, list(EPISODES))
         c.download(SERIES, list(EPISODES))
@@ -136,6 +142,7 @@ class DownloadErrorTestCase(unittest.TestCase):
         attempts = []
 
         def fail(*args, **kwargs):
+            """Fail the test if the download callback is not stopped."""
             attempts.append(1)
             raise RuntimeError('HTTP Error 403: Forbidden')
 
@@ -146,6 +153,7 @@ class DownloadErrorTestCase(unittest.TestCase):
         self.assertEqual(c.video_403_count, 3)
 
     def test_subtitle_failure_retries_without_subtitle_options(self):
+        """Verify subtitle failure retries without subtitle options."""
         c = self.client('unused')
         ScriptedYoutubeDL.instances = []
         ScriptedYoutubeDL.outcomes = [
@@ -174,6 +182,7 @@ class DownloadErrorTestCase(unittest.TestCase):
         self.assertEqual(fallback['postprocessors'], [{'key': 'Exec'}])
 
     def test_backoff_is_capped(self):
+        """Verify exponential backoff stops at its configured maximum."""
         c = self.client('rate limit')
         c.rate_limit_count = 40
         c.download(SERIES, list(EPISODES))

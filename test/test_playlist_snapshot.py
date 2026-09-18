@@ -14,6 +14,7 @@ from playlist_snapshot import PlaylistSnapshot
 
 class PlaylistSnapshotTests(unittest.TestCase):
     def test_large_snapshot_does_not_retain_python_entries(self):
+        """Verify large snapshot does not retain python entries."""
         tracemalloc.start()
         try:
             snapshot = PlaylistSnapshot(
@@ -29,6 +30,7 @@ class PlaylistSnapshotTests(unittest.TestCase):
             tracemalloc.stop()
 
     def test_readers_are_independent_and_preserve_duplicate_titles(self):
+        """Verify readers are independent and preserve duplicate titles."""
         snapshot = PlaylistSnapshot([
             ('Same title', 'https://youtu.be/one'),
             ('Same title', 'https://youtu.be/two'),
@@ -43,6 +45,7 @@ class PlaylistSnapshotTests(unittest.TestCase):
         second.close()
 
     def test_discarded_snapshot_closes_temporary_database(self):
+        """Verify discarded snapshot closes temporary database."""
         snapshot = PlaylistSnapshot([])
         connection = snapshot._connection
         del snapshot

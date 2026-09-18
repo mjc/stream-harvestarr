@@ -12,6 +12,7 @@ class PlaylistSnapshot:
     """
 
     def __init__(self, entries):
+        """Initialize a temporary SQLite snapshot from title and URL pairs."""
         self._connection = sqlite3.connect('')
         self._close = weakref.finalize(self, self._connection.close)
         try:
@@ -28,15 +29,19 @@ class PlaylistSnapshot:
             raise
 
     def __len__(self):
+        """Return the number of entries in the snapshot."""
         return self._count
 
     def __iter__(self):
+        """Iterate over entries in source order."""
         return self._read('ASC')
 
     def __reversed__(self):
+        """Iterate over entries in reverse source order."""
         return self._read('DESC')
 
     def _read(self, order):
+        """Read entries in the requested database order."""
         cursor = self._connection.execute(
             f'SELECT title, url FROM entries ORDER BY position {order}')
         try:

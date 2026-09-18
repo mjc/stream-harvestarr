@@ -237,6 +237,7 @@ def video_search_url(playlist, query):
 
 
 def entry_url(entry):
+    """Return the preferred page URL for an extracted entry."""
     return entry.get('webpage_url') or entry.get('url')
 
 
@@ -251,6 +252,7 @@ class PlaylistCache:
     refreshed: set[tuple[str, str | None, str | None, str | None, int | None]] = field(default_factory=set)
 
     def begin_scan(self, playlists=None):
+        """Reset refresh tracking and remove sources no longer in the scan."""
         self.refreshed.clear()
         if playlists is not None:
             self.entries = {
@@ -259,6 +261,7 @@ class PlaylistCache:
             }
 
     def get(self, ydl_opts, playlist):
+        """Return cached candidates, refreshing the source once when needed."""
         key = self._key(ydl_opts, playlist)
         if key not in self.refreshed:
             self.refreshed.add(key)
@@ -273,6 +276,7 @@ class PlaylistCache:
 
     @staticmethod
     def _key(ydl_opts, playlist):
+        """Build the cache key for a source and its extraction options."""
         return (
             playlist,
             ydl_opts.get('cookiefile'),
@@ -283,6 +287,7 @@ class PlaylistCache:
 
     @staticmethod
     def _extract(ydl_opts, playlist):
+        """Extract flat entries into a snapshot, preserving the prior snapshot on failure."""
         options = dict(ydl_opts)
         options.pop('matchtitle', None)
         options.pop('match_filter', None)
@@ -805,6 +810,7 @@ class StreamHarvester:
         return matched
 
     def getseriesepisodes(self, series):
+        """Return monitored episodes without an existing file for each series."""
         now = datetime.now()
         needed = []
         for ser in series[:]:
@@ -845,6 +851,7 @@ class StreamHarvester:
         return needed
 
     def start_scan(self, series=None):
+        """Prepare the playlist cache for the current series set."""
         playlists = None if series is None else {item['url'] for item in series}
         self.playlist_cache.begin_scan(playlists)
 
@@ -911,6 +918,7 @@ class StreamHarvester:
 
     def ytdl_eps_search_opts(self, playlistreverse, cookies=None, username=None,
                              password=None):
+        """Build yt-dlp options for local episode matching."""
         ytdlopts = {
             'ignoreerrors': True,
             'playlistreverse': playlistreverse,
@@ -933,6 +941,7 @@ class StreamHarvester:
         return ytdlopts
 
     def ytsearch(self, ydl_opts, playlist, matchtitle=None, rules=DEFAULT_RULES):
+        """Return the first candidate matching the URL and title rules."""
         if matchtitle is None:
             matchtitle = ydl_opts.get('matchtitle')
         candidates = self.playlist_cache.get(ydl_opts, playlist)
@@ -955,6 +964,7 @@ class StreamHarvester:
         return None
 
     def _episode_rules(self, series, episode):
+        """Build matching rules for one series episode."""
         return MatchRules(
             site_regex=series.get('site_regex'),
             require=series.get('site_require'),
@@ -1054,6 +1064,7 @@ class StreamHarvester:
 
     @staticmethod
     def without_subtitles(options):
+        """Remove subtitle options and postprocessors for a fallback download."""
         fallback = dict(options)
         for key in ('writesubtitles', 'writeautomaticsub', 'subtitleslangs'):
             fallback.pop(key, None)
@@ -1088,11 +1099,13 @@ class StreamHarvester:
 
     @staticmethod
     def is_forbidden_error(error):
+        """Return whether an error indicates an HTTP 403 response."""
         message = str(error).lower()
         return 'http error 403' in message or '403 forbidden' in message
 
     @staticmethod
     def is_rate_limit_error(error):
+        """Return whether an error indicates rate limiting."""
         message = str(error).lower()
         return any(marker in message for marker in (
             'rate-limited', 'rate limit', 'try again later'))
@@ -1143,6 +1156,7 @@ class StreamHarvester:
         return False
 
     def download_episode(self, series, episode, episode_number):
+        """Find and download one episode, returning whether the scan should stop."""
         url = self.find_episode(series, episode)
         if url is None:
             logger.info('    %s: Missing - %s:', episode_number, episode['title'])
@@ -1168,6 +1182,7 @@ class StreamHarvester:
         return False
 
     def download(self, series, episodes):
+        """Process wanted episodes grouped by series."""
         if not series:
             logger.info('Nothing to process')
             return
@@ -1197,6 +1212,7 @@ class StreamHarvester:
 
 
 def main(client=None):
+    """Run one scan of the configured series."""
     client = client or StreamHarvester()
     series = client.filterseries()
     client.start_scan(series)
