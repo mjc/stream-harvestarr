@@ -31,8 +31,12 @@ class FakeYoutubeDL(object):
     def add_info_extractor(self, extractor):
         self.extractor = extractor
 
-    def extract_info(self, url, download=False):
+    def extract_info(self, url, download=False, process=True):
         type(self).urls.append(url)
+        self.opts['process'] = process
+        return type(self).results.pop(0)
+
+    def process_ie_result(self, result, download=False):
         return type(self).results.pop(0)
 
 
@@ -134,6 +138,56 @@ class PlaylistCacheTestCase(unittest.TestCase):
         self.cache.begin_scan({first})
         self.assertEqual(len(self.cache.entries), 1)
         self.assertEqual(len(FakeYoutubeDL.calls), 2)
+
+    def test_later_page_failure_preserves_complete_snapshot(self):
+        def broken_pages():
+            yield {'url': 'https://youtu.be/partial', 'title': 'Partial'}
+            raise RuntimeError('second page failed')
+
+        url = 'https://www.youtube.com/@VICE/videos'
+        FakeYoutubeDL.results = [
+            {'entries': [{'url': 'https://youtu.be/old', 'title': 'Old'}]},
+            {'entries': broken_pages()},
+        ]
+        previous = self.cache.get({}, url)
+        self.cache.begin_scan()
+        with self.assertLogs(stream_harvestarr.logger, level='ERROR'):
+            current = self.cache.get({}, url)
+        self.assertIs(current, previous)
+        self.assertEqual(list(current), [{'url': 'https://youtu.be/old', 'title': 'Old'}])
+
+    def test_raw_search_limit_does_not_truncate_full_enumeration(self):
+        seen = []
+
+        def pages():
+            for number in range(25):
+                seen.append(number)
+                yield {'url': f'https://youtu.be/{number}', 'title': str(number)}
+
+        url = 'https://www.youtube.com/@VICE/search?query=Episode'
+        FakeYoutubeDL.results = [{'entries': pages()}, {'entries': pages()}]
+        bounded = self.cache.get({'playlistend': 20}, url)
+        self.assertEqual(len(bounded), 20)
+        self.assertEqual(seen, list(range(20)))
+        full = self.cache.get({}, url)
+        self.assertEqual(len(full), 25)
+        self.assertEqual(next(reversed(full))['title'], '24')
+        self.assertFalse(FakeYoutubeDL.calls[0]['process'])
+
+    def test_non_youtube_sources_keep_normal_processing(self):
+        FakeYoutubeDL.results = [{'entries': [{'url': 'https://example.com/video'}]}]
+        self.cache.get({}, 'https://example.com/playlist')
+        self.assertTrue(FakeYoutubeDL.calls[0]['process'])
+
+    def test_raw_tab_redirect_is_resolved_before_caching(self):
+        FakeYoutubeDL.results = [
+            {'_type': 'url', 'url': 'https://www.youtube.com/playlist?list=redirect'},
+            {'entries': [{'url': 'https://youtu.be/episode', 'title': 'Episode'}]},
+        ]
+        snapshot = self.cache.get({}, 'https://www.youtube.com/@VICE/videos')
+        self.assertEqual(list(snapshot), [
+            {'url': 'https://youtu.be/episode', 'title': 'Episode'},
+        ])
 
 
 class EpisodeSearchTestCase(unittest.TestCase):

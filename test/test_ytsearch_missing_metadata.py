@@ -42,7 +42,7 @@ class FakeYoutubeDL(object):
     def add_info_extractor(self, extractor):
         self.extractor = extractor
 
-    def extract_info(self, url, download=False):
+    def extract_info(self, url, download=False, process=True):
         if self.exc is not None:
             raise self.exc
         return self.result

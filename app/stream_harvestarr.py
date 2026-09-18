@@ -3,13 +3,14 @@ import urllib.parse
 import yt_dlp
 import collections
 from dataclasses import dataclass, field
+from itertools import islice
 import os
 import sys
 import re
-from typing import Any
 from utils import upperescape, normalize_title, checkconfig, offsethandler, YoutubeDLLogger, ytdl_hooks, ytdl_hooks_debug, setup_logging  # NOQA
 from pathutils import normalize_root_folder, DEFAULT_ROOT_FOLDER
 from youtube_playlist import YoutubeTabIE
+from playlist_snapshot import PlaylistSnapshot
 from datetime import datetime
 import schedule
 import time
@@ -245,7 +246,7 @@ class PlaylistCache:
 
     entries: dict[
         tuple[str, str | None, str | None, str | None, int | None],
-        list[dict[str, Any]]
+        PlaylistSnapshot
     ] = field(default_factory=dict)
     refreshed: set[tuple[str, str | None, str | None, str | None, int | None]] = field(default_factory=set)
 
@@ -267,8 +268,8 @@ class PlaylistCache:
 
         candidates = self.entries.get(key, [])
         if ydl_opts.get('playlistreverse'):
-            return list(reversed(candidates))
-        return list(candidates)
+            return reversed(candidates)
+        return candidates
 
     @staticmethod
     def _key(ydl_opts, playlist):
@@ -287,26 +288,39 @@ class PlaylistCache:
         options.pop('match_filter', None)
         options['extract_flat'] = 'in_playlist'
         options['playlistreverse'] = False
+        url = video_playlist_url(playlist)
+        # Raw tab extraction yields pages as they arrive. Normal playlist
+        # processing retains all entries, even with yt-dlp's lazy option.
+        raw_tab = YoutubeTabIE.suitable(url)
 
         try:
             with yt_dlp.YoutubeDL(options) as ydl:
                 ydl.add_info_extractor(YoutubeTabIE())
-                result = ydl.extract_info(
-                    video_playlist_url(playlist),
-                    download=False,
+                if raw_tab:
+                    result = ydl.extract_info(url, download=False, process=False)
+                    # Some tab URLs resolve to another extractor or URL. Let
+                    # yt-dlp handle those redirects using its normal semantics.
+                    if result and result.get('_type') in ('url', 'url_transparent'):
+                        result = ydl.process_ie_result(result, download=False)
+                else:
+                    result = ydl.extract_info(url, download=False)
+                if result is None:
+                    return None
+                entries = result.get('entries')
+                entries = entries if entries is not None else (result,)
+                if raw_tab:
+                    entries = islice(entries, options.get('playlistend'))
+                # Consume generators inside the client lifetime and error
+                # boundary. A failed later page must not replace a good cache.
+                return PlaylistSnapshot(
+                    (entry.get('title'), entry_url(entry))
+                    for entry in entries
+                    if isinstance(entry, dict) and entry_url(entry)
+                    and is_single_video(entry)
                 )
         except Exception as error:
             logger.error('Playlist extraction failed for %s: %s', playlist, error)
             return None
-
-        if result is None:
-            return None
-        entries = result.get('entries')
-        entries = list(entries) if entries is not None else [result]
-        return [
-            entry for entry in entries
-            if isinstance(entry, dict) and entry_url(entry)
-        ]
 
 
 # Keys filterseries() and merge_service_config() actually read. Anything else
@@ -922,7 +936,8 @@ class StreamHarvester:
         if matchtitle is None:
             matchtitle = ydl_opts.get('matchtitle')
         candidates = self.playlist_cache.get(ydl_opts, playlist)
-        for entry in candidates:
+        count = 0
+        for count, entry in enumerate(candidates, start=1):
             url = entry_url(entry)
             if SHORT_URL_RE.search(url or ''):
                 continue
@@ -936,7 +951,7 @@ class StreamHarvester:
                 continue
             logger.debug('  Matched "%s"', entry.get('title'))
             return url
-        logger.debug('  No single video matched in %d result(s)', len(candidates))
+        logger.debug('  No single video matched in %d result(s)', count)
         return None
 
     def _episode_rules(self, series, episode):
