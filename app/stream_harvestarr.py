@@ -243,11 +243,10 @@ class PlaylistCache:
     """Cache flat playlist entries and refresh each source once per scan."""
 
     entries: dict[
-        tuple[str, str | None, str | None, str | None], list[dict[str, Any]]
+        tuple[str, str | None, str | None, str | None, int | None],
+        list[dict[str, Any]]
     ] = field(default_factory=dict)
-    refreshed: set[tuple[str, str | None, str | None, str | None]] = field(
-        default_factory=set
-    )
+    refreshed: set[tuple[str, str | None, str | None, str | None, int | None]] = field(default_factory=set)
 
     def begin_scan(self, playlists=None):
         self.refreshed.clear()
@@ -277,6 +276,7 @@ class PlaylistCache:
             ydl_opts.get('cookiefile'),
             ydl_opts.get('username'),
             ydl_opts.get('password'),
+            ydl_opts.get('playlistend'),
         )
 
     @staticmethod
@@ -962,6 +962,12 @@ class StreamHarvester:
                 'lazy_playlist': True,
                 'playlistend': CHANNEL_SEARCH_LIMIT,
             })
+            match = self.ytsearch(search_options, search_url, matchtitle, rules)
+            if match:
+                return match
+            # Search tabs are much smaller than a channel's full video tab.
+            # Retry without the bound before paying for a full-history scan.
+            search_options.pop('playlistend')
             match = self.ytsearch(search_options, search_url, matchtitle, rules)
             if match:
                 return match

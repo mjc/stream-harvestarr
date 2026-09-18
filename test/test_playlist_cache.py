@@ -138,7 +138,16 @@ class EpisodeSearchTestCase(unittest.TestCase):
     def test_channel_search_is_bounded_before_full_scan(self):
         client = object.__new__(stream_harvestarr.StreamHarvester)
         client.ytdl_eps_search_opts = Mock(return_value={'playlistreverse': False})
-        client.ytsearch = Mock(side_effect=[None, 'https://youtu.be/full-scan'])
+        options_seen = []
+        urls_seen = []
+        results = iter((None, None, 'https://youtu.be/full-scan'))
+
+        def ytsearch(options, url, *args):
+            options_seen.append(dict(options))
+            urls_seen.append(url)
+            return next(results)
+
+        client.ytsearch = Mock(side_effect=ytsearch)
         series = {
             'url': 'https://www.youtube.com/@VICE/videos',
             'playlistreverse': False,
@@ -148,14 +157,19 @@ class EpisodeSearchTestCase(unittest.TestCase):
         result = client.find_episode(series, episode)
 
         self.assertEqual(result, 'https://youtu.be/full-scan')
-        first_options = client.ytsearch.call_args_list[0].args[0]
+        first_options = options_seen[0]
         self.assertEqual(first_options['playlistend'], 20)
         self.assertTrue(first_options['lazy_playlist'])
         self.assertEqual(
-            client.ytsearch.call_args_list[0].args[1],
+            urls_seen[0],
+            'https://www.youtube.com/@VICE/search?query=Episode+1')
+        second_options = options_seen[1]
+        self.assertNotIn('playlistend', second_options)
+        self.assertEqual(
+            urls_seen[1],
             'https://www.youtube.com/@VICE/search?query=Episode+1')
         self.assertEqual(
-            client.ytsearch.call_args_list[1].args[1],
+            urls_seen[2],
             'https://www.youtube.com/@VICE/videos')
 
 
