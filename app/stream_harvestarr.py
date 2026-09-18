@@ -9,6 +9,7 @@ import re
 from typing import Any
 from utils import upperescape, normalize_title, checkconfig, offsethandler, YoutubeDLLogger, ytdl_hooks, ytdl_hooks_debug, setup_logging  # NOQA
 from pathutils import normalize_root_folder, DEFAULT_ROOT_FOLDER
+from youtube_playlist import YoutubeTabIE
 from datetime import datetime
 import schedule
 import time
@@ -289,6 +290,7 @@ class PlaylistCache:
 
         try:
             with yt_dlp.YoutubeDL(options) as ydl:
+                ydl.add_info_extractor(YoutubeTabIE())
                 result = ydl.extract_info(
                     video_playlist_url(playlist),
                     download=False,

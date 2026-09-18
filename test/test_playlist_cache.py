@@ -28,6 +28,9 @@ class FakeYoutubeDL(object):
     def __exit__(self, *exc_info):
         return False
 
+    def add_info_extractor(self, extractor):
+        self.extractor = extractor
+
     def extract_info(self, url, download=False):
         type(self).urls.append(url)
         return type(self).results.pop(0)
