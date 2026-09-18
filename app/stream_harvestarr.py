@@ -961,6 +961,7 @@ class StreamHarvester:
             'nooverwrites': True,
             'throttled_rate': '100K',
             'concurrent_fragments': 5,
+            'audio_multistreams': True,
             'js_runtimes': JS_RUNTIMES,
         }
         if self.sleep_requests > 0:
