@@ -157,7 +157,7 @@ class DownloadErrorTestCase(unittest.TestCase):
         c = self.client('unused')
         ScriptedYoutubeDL.instances = []
         ScriptedYoutubeDL.outcomes = [
-            stream_harvestarr.yt_dlp.utils.DownloadError('subtitle HTTP 429'),
+            stream_harvestarr.yt_dlp.utils.DownloadError("ERROR: Unable to download video subtitles for 'en': HTTP Error 429"),
             None,
         ]
         stream_harvestarr.yt_dlp.YoutubeDL = ScriptedYoutubeDL
@@ -180,6 +180,59 @@ class DownloadErrorTestCase(unittest.TestCase):
         self.assertNotIn('writeautomaticsub', fallback)
         self.assertNotIn('subtitleslangs', fallback)
         self.assertEqual(fallback['postprocessors'], [{'key': 'Exec'}])
+
+    def test_unrelated_subtitle_text_does_not_retry(self):
+        """A title or postprocessor mentioning subtitles is not a transport failure."""
+        c = self.client('unused')
+        stream_harvestarr.yt_dlp.YoutubeDL = ScriptedYoutubeDL
+        for message in ('ERROR: subtitle video is unavailable',
+                        'ERROR: Postprocessing: subtitle conversion failed'):
+            ScriptedYoutubeDL.instances = []
+            ScriptedYoutubeDL.outcomes = [stream_harvestarr.yt_dlp.utils.DownloadError(message)]
+            with self.assertRaises(stream_harvestarr.yt_dlp.utils.DownloadError):
+                c.download_video('https://youtu.be/x', {'writesubtitles': True}, 'Episode')
+            self.assertEqual(len(ScriptedYoutubeDL.instances), 1)
+
+    def test_subtitle_retry_failure_propagates_once(self):
+        """A failed fallback must not loop or suppress the video error."""
+        c = self.client('unused')
+        stream_harvestarr.yt_dlp.YoutubeDL = ScriptedYoutubeDL
+        ScriptedYoutubeDL.instances = []
+        ScriptedYoutubeDL.outcomes = [
+            stream_harvestarr.yt_dlp.utils.DownloadError("Unable to download video subtitles for 'en': 429"),
+            stream_harvestarr.yt_dlp.utils.DownloadError('HTTP Error 403: Forbidden'),
+        ]
+        with self.assertRaisesRegex(stream_harvestarr.yt_dlp.utils.DownloadError, '403'):
+            c.download_video('https://youtu.be/x', {'writesubtitles': True}, 'Episode')
+        self.assertEqual(len(ScriptedYoutubeDL.instances), 2)
+
+    def test_subtitle_diagnostic_without_enabled_subtitles_does_not_retry(self):
+        """Do not retry with unchanged options when subtitles were already off."""
+        c = self.client('unused')
+        stream_harvestarr.yt_dlp.YoutubeDL = ScriptedYoutubeDL
+        ScriptedYoutubeDL.instances = []
+        ScriptedYoutubeDL.outcomes = [stream_harvestarr.yt_dlp.utils.DownloadError(
+            "Unable to download video subtitles for 'en': 429")]
+        with self.assertRaises(stream_harvestarr.yt_dlp.utils.DownloadError):
+            c.download_video('https://youtu.be/x', {}, 'Episode')
+        self.assertEqual(len(ScriptedYoutubeDL.instances), 1)
+
+    def test_non_forbidden_error_resets_consecutive_counter(self):
+        """Only consecutive forbidden download failures stop the scan."""
+        c = self.client('unused')
+        for message in ('HTTP Error 403', 'other failure') * 4:
+            self.assertFalse(c.handle_download_error(RuntimeError(message), 1))
+        self.assertEqual(c.video_403_count, 0)
+
+    def test_new_scan_resets_forbidden_counter(self):
+        """Each scheduled scan gets three attempts, even after the last aborted."""
+        c = self.client('HTTP Error 403: Forbidden')
+        c.playlist_cache = stream_harvestarr.PlaylistCache()
+        for _ in range(2):
+            c.start_scan(SERIES)
+            self.assertEqual(c.video_403_count, 0)
+            c.download(SERIES, [dict(EPISODES[0], episodeNumber=n) for n in range(4)])
+            self.assertEqual(c.video_403_count, 3)
 
     def test_backoff_is_capped(self):
         """Verify exponential backoff stops at its configured maximum."""

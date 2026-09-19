@@ -25,6 +25,35 @@ Please update your image and update your config.yml. :warning:
 
 ## Documentation
 
+### Playlist scans and download recovery
+
+Sources are extracted once per scan and stored in temporary SQLite snapshots
+containing titles and URLs. Full sources retain their last complete snapshot if
+a refresh fails; the log distinguishes that fallback from a failure with no
+snapshot available. Snapshots require temporary disk space and do not survive a
+restart. Full enumeration still needs to fetch every page.
+
+Channel searches are opt-in: set `channel_search: True` on a series or shared
+service to try 20 channel-search results, then all search results, before the
+configured source. Search stages use YouTube's relevance order, regardless of
+`playlistreverse`. This can select a different upload when several titles match,
+and rankings can change over time. Leave the option off to preserve the configured
+source's ordering. Use `regex.require` for channels carrying multiple shows and
+`strict_parts` to reject partial uploads for whole episodes. Search snapshots are
+closed after each lookup, so their open databases do not grow with the backlog.
+
+A subtitle-download failure retries once without subtitle options and subtitle
+postprocessors. Conversion, embedding, filesystem, and unrelated download errors
+do not trigger that retry. A successful fallback can leave a video without
+subtitles. Three consecutive video HTTP 403 errors stop the entire scan until
+the next scheduled run. A successful download or a non-403 download error resets
+the counter; episodes without a match do not. Each new scan starts at zero.
+
+The YouTube pagination optimization overrides private yt-dlp methods. Compatibility
+tests compare its results and continuation tokens with the installed upstream
+extractor. Dependency upgrades still require those checks: an incompatible
+release can prevent extraction before the next scheduled CI run catches it.
+
 **For detailed documentation, configuration guides, and troubleshooting, visit the [Stream Harvestarr Wiki](https://github.com/ryakel/stream-harvestarr/wiki)**
 
 Key documentation sections:

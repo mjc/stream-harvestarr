@@ -21,6 +21,7 @@ The video-tab stage must keep honouring ``playlistreverse``: there it is
 meaningful and is the documented behaviour.
 """
 import os
+import sqlite3
 import sys
 import unittest
 from unittest.mock import patch
@@ -74,7 +75,7 @@ class SearchStageOrderingTestCase(unittest.TestCase):
 
     def series(self, playlistreverse):
         """Build a minimal series dict for the channel under test."""
-        return {'url': CHANNEL, 'playlistreverse': playlistreverse}
+        return {'url': CHANNEL, 'playlistreverse': playlistreverse, 'channel_search': True}
 
     def test_search_stage_keeps_relevance_order_when_reverse_is_on(self):
         """The default playlistreverse=True must not invert search ranking."""
@@ -89,21 +90,73 @@ class SearchStageOrderingTestCase(unittest.TestCase):
 
     def test_search_stages_run_with_reverse_disabled(self):
         """Both channel-search stages extract with playlistreverse off."""
-        self.client.find_episode(self.series(True), dict(EPISODE))
+        self.client.find_episode(self.series(True), dict(EPISODE, title='Absent'))
         searches = [opts for url, opts in self.extract_calls if '/search' in url]
-        self.assertTrue(searches, 'no channel-search stage ran')
+        self.assertEqual(len(searches), 2)
         for opts in searches:
             self.assertFalse(opts.get('playlistreverse'))
 
     def test_video_tab_stage_still_honours_playlistreverse(self):
         """The chronological tab keeps the user's ordering choice."""
-        # No search url resolves for a bare playlist, so only the tab stage runs.
-        series = {'url': 'https://www.youtube.com/playlist?list=PLxxxx',
-                  'playlistreverse': True}
-        self.client.find_episode(series, dict(EPISODE))
+        def extract(options, url):
+            self.extract_calls.append((url, dict(options)))
+            return PlaylistSnapshot([] if '/search' in url else RANKED)
+
+        with patch.object(stream_harvestarr.PlaylistCache, '_extract', side_effect=extract):
+            match = self.client.find_episode(self.series(True), dict(EPISODE))
+        self.assertEqual(match, RANKED[-1][1])
         tabs = [opts for url, opts in self.extract_calls if '/search' not in url]
         self.assertTrue(tabs, 'no video-tab stage ran')
         self.assertTrue(tabs[-1].get('playlistreverse'))
+
+    def test_default_uses_configured_source_order(self):
+        """Existing configurations must not silently switch to relevance order."""
+        for reverse, expected in ((True, RANKED[-1][1]), (False, RANKED[0][1])):
+            self.extract_calls.clear()
+            self.client.start_scan()
+            match = self.client.find_episode(
+                {'url': CHANNEL, 'playlistreverse': reverse}, dict(EPISODE))
+            self.assertEqual(match, expected)
+            self.assertEqual([url for url, _ in self.extract_calls], [CHANNEL])
+
+    def test_search_snapshots_are_closed_after_each_episode(self):
+        """A backlog must not retain a database or refresh key per query."""
+        for _ in range(200):
+            snapshot = PlaylistSnapshot(RANKED)
+            connection = snapshot._connection
+            with patch.object(stream_harvestarr.PlaylistCache, '_extract', return_value=snapshot):
+                self.client.find_episode(self.series(True), dict(EPISODE))
+            self.assertEqual(self.client.playlist_cache.entries, {})
+            self.assertEqual(self.client.playlist_cache.refreshed, set())
+            with self.assertRaises(sqlite3.ProgrammingError):
+                connection.execute('SELECT 1')
+
+    def test_search_snapshot_is_released_when_matching_raises(self):
+        """Matching failures must also release the temporary database."""
+        with patch.object(stream_harvestarr, 'title_matches', side_effect=RuntimeError('bad match')):
+            with self.assertRaisesRegex(RuntimeError, 'bad match'):
+                self.client.find_episode(self.series(True), dict(EPISODE))
+        self.assertEqual(self.client.playlist_cache.entries, {})
+        self.assertEqual(self.client.playlist_cache.refreshed, set())
+
+
+class ChannelSearchConfigTests(unittest.TestCase):
+    def test_inherited_option_is_coerced_and_series_can_disable_it(self):
+        """YAML strings and native booleans must produce the same opt-in."""
+        client = object.__new__(stream_harvestarr.StreamHarvester)
+        client.services = {'shared': {'url': CHANNEL, 'channel_search': 'True'}}
+        for value, expected in (('False', False), ('false', False), (False, False),
+                                ('True', True), ('true', True), (True, True)):
+            with self.subTest(value=value):
+                client.series = [{'title': 'Show', 'service': 'shared', 'channel_search': value}]
+                client.get_series = lambda: [{'title': 'Show', 'monitored': True}]
+                self.assertIs(client.filterseries()[0]['channel_search'], expected)
+        client.series = [{'title': 'Show', 'service': 'shared'}]
+        self.assertTrue(client.filterseries()[0]['channel_search'])
+        client.services['shared'].pop('channel_search')
+        self.assertFalse(client.filterseries()[0]['channel_search'])
+        self.assertIn('channel_search', stream_harvestarr.KNOWN_SERIES_KEYS)
+        self.assertIn('channel_search', stream_harvestarr.KNOWN_SERVICE_KEYS)
 
 
 if __name__ == '__main__':

@@ -31,6 +31,10 @@ class PlaylistSnapshot:
     def __len__(self):
         return self._count
 
+    def close(self):
+        """Release the temporary database; repeated calls are harmless."""
+        self._close()
+
     def __iter__(self):
         return self._read('ASC')
 

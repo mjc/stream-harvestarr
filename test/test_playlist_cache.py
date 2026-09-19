@@ -2,7 +2,7 @@
 import os
 import sys
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 APP_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'app'))
 sys.path.insert(0, APP_DIR)
@@ -119,6 +119,24 @@ class PlaylistCacheTestCase(unittest.TestCase):
             [entry['url'] for entry in self.cache.get(opts, playlist)],
             ['https://youtu.be/old'])
 
+    def test_extractor_api_failure_is_diagnosed_and_preserves_snapshot(self):
+        """Private API drift must be visible with and without a cached snapshot."""
+        url = 'https://www.youtube.com/@VICE/videos'
+        FakeYoutubeDL.results = [{'entries': [{'url': 'https://youtu.be/old'}]}]
+        previous = self.cache.get({}, url)
+        for cache, diagnostic in ((self.cache, 'previous complete snapshot'),
+                                  (stream_harvestarr.PlaylistCache(), 'no snapshot is available')):
+            cache.begin_scan()
+            with patch.object(FakeYoutubeDL, 'extract_info', side_effect=AttributeError('missing _rich_entries')):
+                with self.assertLogs(stream_harvestarr.logger, level='WARNING') as logs:
+                    result = cache.get({}, url)
+            self.assertIn('missing _rich_entries', '\n'.join(logs.output))
+            self.assertIn(diagnostic, '\n'.join(logs.output))
+            if cache is self.cache:
+                self.assertIs(result, previous)
+            else:
+                self.assertEqual(list(result), [])
+
     def test_playlist_reverse_is_applied_without_duplicate_extraction(self):
         """Verify playlist reverse is applied without duplicate extraction."""
         playlist = 'https://www.youtube.com/playlist?list=TEST'
@@ -214,6 +232,7 @@ class EpisodeSearchTestCase(unittest.TestCase):
     def test_channel_search_is_bounded_before_full_scan(self):
         """Verify channel search is bounded before full scan."""
         client = object.__new__(stream_harvestarr.StreamHarvester)
+        client.playlist_cache = stream_harvestarr.PlaylistCache()
         client.ytdl_eps_search_opts = Mock(return_value={'playlistreverse': False})
         options_seen = []
         urls_seen = []
@@ -227,6 +246,7 @@ class EpisodeSearchTestCase(unittest.TestCase):
 
         client.ytsearch = Mock(side_effect=ytsearch)
         series = {
+            'channel_search': True,
             'url': 'https://www.youtube.com/@VICE/videos',
             'playlistreverse': False,
         }
