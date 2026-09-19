@@ -988,6 +988,16 @@ class StreamHarvester:
             search_options.update({
                 'lazy_playlist': True,
                 'playlistend': CHANNEL_SEARCH_LIMIT,
+                # A channel-search tab is ordered by relevance, not by date.
+                # playlistreverse is the user's oldest-first/newest-first axis
+                # on the chronological video tab, and PlaylistCache.get()
+                # applies it by reversing the candidate list -- which here
+                # would mean preferring the *worst* result that still passes
+                # the matching rules. It defaults to True, and playlistend
+                # bounds stage one to the top CHANNEL_SEARCH_LIMIT hits, so
+                # leaving it set makes the default config prefer rank 20 over
+                # rank 1. The video-tab search below still honours it.
+                'playlistreverse': False,
             })
             match = self.ytsearch(search_options, search_url, matchtitle, rules)
             if match:
