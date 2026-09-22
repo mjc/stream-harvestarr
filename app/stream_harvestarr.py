@@ -273,6 +273,8 @@ class StreamHarvester:
             # Rate limiting configuration
             try:
                 self.download_delay = int(self.config_section.get('download_delay', 0))
+                if self.download_delay < 0:
+                    raise ValueError('download_delay must be non-negative')
                 if self.download_delay > 0:
                     logger.info(
                         'Download delay set to {} seconds between downloads'.format(
@@ -283,6 +285,8 @@ class StreamHarvester:
                 self.download_delay = 0
             try:
                 self.sleep_requests = int(self.config_section.get('sleep_requests', 0))
+                if self.sleep_requests < 0:
+                    raise ValueError('sleep_requests must be non-negative')
                 if self.sleep_requests > 0:
                     logger.info(
                         'Sleep requests set to {} seconds between API requests'.format(
@@ -293,6 +297,8 @@ class StreamHarvester:
                 self.sleep_requests = 0
             try:
                 self.rate_limit_sleep = int(self.config_section.get('rate_limit_sleep', 900))
+                if self.rate_limit_sleep < 0:
+                    raise ValueError('rate_limit_sleep must be non-negative')
                 logger.debug('Rate limit sleep set to {} seconds'.format(self.rate_limit_sleep))
             except (AttributeError, ValueError):
                 self.rate_limit_sleep = 900
@@ -316,6 +322,8 @@ class StreamHarvester:
                 self.backoff_multiplier = 2.0
             try:
                 self.backoff_max = int(self.config_section.get('backoff_max', 3600))
+                if self.backoff_max < 0:
+                    raise ValueError('backoff_max must be non-negative')
                 logger.debug('Max backoff set to {} seconds'.format(self.backoff_max))
             except (AttributeError, ValueError):
                 self.backoff_max = 3600
