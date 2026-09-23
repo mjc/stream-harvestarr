@@ -30,13 +30,14 @@ from utils import (
     ytdl_hooks_debug,
 )
 
-# allow debug arg for verbose logging
-parser = argparse.ArgumentParser(description='Process some integers.')
-parser.add_argument('--debug', action='store_true', help='Enable debug logging')
-args = parser.parse_args()
+def parse_args(argv=None):
+    """Parse command-line options when the executable entry point runs."""
+    parser = argparse.ArgumentParser(description='Run Stream Harvestarr scans.')
+    parser.add_argument('--debug', action='store_true', help='Enable debug logging')
+    return parser.parse_args(argv)
 
-# setup logger
-logger = setup_logging(True, True, args.debug)
+# Configure logging without inspecting the importing process's arguments.
+logger = setup_logging(True, True)
 
 date_format = '%Y-%m-%dT%H:%M:%SZ'
 
@@ -221,7 +222,7 @@ def compile_site_regex(match, replace, series_title):
     if match is None:
         return None
     try:
-        return (re.compile(match), replace if replace is not None else '')
+        pattern = re.compile(match)
     except re.error as e:
         logger.warning(
             'Series "{}" has an invalid regex.site match pattern ({}) - ignoring'.format(
@@ -229,6 +230,14 @@ def compile_site_regex(match, replace, series_title):
             )
         )
         return None
+    replacement = replace if replace is not None else ''
+    try:
+        pattern.sub(replacement, '')
+    except (re.error, IndexError, KeyError, TypeError) as e:
+        raise ValueError(
+            f'Series "{series_title}" has an invalid regex.site replacement: {e}'
+        ) from e
+    return pattern, replacement
 
 
 def compile_require(pattern, series_title):
@@ -246,16 +255,37 @@ def compile_require(pattern, series_title):
     try:
         return re.compile(pattern, re.IGNORECASE)
     except re.error as e:
-        logger.warning(
-            'Series "{}" has an invalid regex.require pattern ({}) - ignoring'.format(
-                series_title, e
-            )
-        )
+        raise ValueError(
+            f'Series "{series_title}" has an invalid regex.require pattern: {e}'
+        ) from e
+
+
+def validate_regex_replacement(match, replacement, series_title):
+    """Validate a Sonarr title rewrite before a scan can use it."""
+    try:
+        re.compile(match).sub(replacement, '')
+    except (re.error, IndexError, KeyError, TypeError) as e:
+        raise ValueError(
+            f'Series "{series_title}" has an invalid Sonarr regex replacement: {e}'
+        ) from e
+
+
+def url_origin(url):
+    """Return the normalized HTTP origin for a URL, or None if invalid."""
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        if parsed.scheme not in ('http', 'https') or not parsed.hostname:
+            return None
+        port = parsed.port
+    except ValueError:
         return None
+    if port is None:
+        port = 443 if parsed.scheme == 'https' else 80
+    return parsed.scheme, parsed.hostname.lower(), port
 
 
 class StreamHarvester:
-    def __init__(self, playlist_cache=None):
+    def __init__(self, playlist_cache=None, debug=False):
         """Set up app with config file settings"""
         cfg = checkconfig()
         # Set config key for backwards compatibility in config.yml
@@ -265,7 +295,7 @@ class StreamHarvester:
         # Stream Harvestarr Setup
         try:
             self.scan_interval = self.set_scan_interval(self.config_section['scan_interval'])
-            self.debug = args.debug or self.config_section.get('debug') in ('true', 'True', True)
+            self.debug = debug or self.config_section.get('debug') in ('true', 'True', True)
             level = logging.DEBUG if self.debug else logging.INFO
             logger.setLevel(level)
             for handler in logger.handlers:
@@ -486,8 +516,7 @@ class StreamHarvester:
         if params is not None:
             logger.debug('GET request with %d additional params', len(params))
             args.update(params)
-        url = '{}?{}'.format(url, urllib.parse.urlencode(args))
-        response = requests.get(url, timeout=SONARR_TIMEOUT)
+        response = requests.get(url, params=args, timeout=SONARR_TIMEOUT)
         response.raise_for_status()
         return response
 
@@ -497,13 +526,14 @@ class StreamHarvester:
         headers = {
             'Content-Type': 'application/json',
         }
-        args = (('apikey', self.api_key),)
+        args = {'apikey': self.api_key}
         if params is not None:
             args.update(params)
             logger.debug('PUT request params keys: {}'.format(list(params.keys())))
         res = requests.post(
             url, headers=headers, params=args, json=jsondata, timeout=SONARR_TIMEOUT
         )
+        res.raise_for_status()
         return res
 
     def rescanseries(self, series_id):
@@ -535,7 +565,7 @@ class StreamHarvester:
                     wnt.get('title', '?'), service_name
                 )
             )
-            return wnt
+            return None
 
         svc = self.services[service_name]
         logger.debug(
@@ -560,37 +590,46 @@ class StreamHarvester:
             # No series url at all - use service url directly
             merged['url'] = svc_url
             logger.debug('  URL inherited from service: {}'.format(svc_url))
-        elif not series_url.startswith('http'):
-            # Relative path - join onto service base url
-            base = svc_url.rstrip('/')
-            path = series_url.lstrip('/')
-            merged['url'] = '{}/{}'.format(base, path)
-            logger.debug('  URL joined from service: {}'.format(merged['url']))
         else:
-            # Absolute URL provided — verify it shares the same domain as the service
-            # to prevent credentials/cookies inherited from the service being sent to
-            # a different site than intended.
-            svc_domain = urllib.parse.urlparse(svc_url).netloc
-            series_domain = urllib.parse.urlparse(series_url).netloc
+            try:
+                parsed_series_url = urllib.parse.urlsplit(series_url)
+            except ValueError:
+                parsed_series_url = None
 
-            if svc_domain and series_domain != svc_domain:
-                logger.warning(
-                    '  Series "{}" uses service "{}" but URL domain "{}" does not match '
-                    'service domain "{}". Credentials and cookies will NOT be inherited '
-                    'to avoid sending them to an unintended site. '
-                    'Use a relative URL or move credentials to the series directly.'.format(
-                        wnt.get('title', '?'), service_name, series_domain, svc_domain
-                    )
+            if parsed_series_url is not None and not (
+                parsed_series_url.scheme or parsed_series_url.netloc
+            ):
+                # Join only genuinely relative paths; urljoin also accepts absolute URLs.
+                merged['url'] = urllib.parse.urljoin(
+                    svc_url.rstrip('/') + '/', series_url.lstrip('/')
                 )
-                # Strip inherited credentials and cookies from merged config
-                for cred_key in ('username', 'password', 'cookies_file'):
-                    if cred_key in merged and cred_key not in wnt:
-                        del merged[cred_key]
-                        logger.debug(
-                            '  Removed inherited {} due to domain mismatch'.format(cred_key)
-                        )
+                logger.debug('  URL joined from service: {}'.format(merged['url']))
             else:
-                logger.debug('  Absolute URL domain matches service domain - credentials retained')
+                # Absolute URLs may inherit secrets only when both origins are valid
+                # HTTP(S) origins and match exactly.
+                svc_origin = url_origin(svc_url)
+                series_origin = url_origin(series_url)
+
+                if svc_origin != series_origin:
+                    logger.warning(
+                        '  Series "{}" uses service "{}" but URL origin does not match '
+                        'service origin. Credentials and cookies will NOT be inherited '
+                        'to avoid sending them to an unintended site. '
+                        'Use a relative URL or move credentials to the series directly.'.format(
+                            wnt.get('title', '?'), service_name
+                        )
+                    )
+                    # Strip inherited credentials and cookies from merged config
+                    for cred_key in ('username', 'password', 'cookies_file'):
+                        if cred_key in merged and cred_key not in wnt:
+                            del merged[cred_key]
+                            logger.debug(
+                                '  Removed inherited {} due to origin mismatch'.format(cred_key)
+                            )
+                else:
+                    logger.debug(
+                        '  Absolute URL origin matches service origin - credentials retained'
+                    )
 
         return merged
 
@@ -598,11 +637,14 @@ class StreamHarvester:
         """Return all series in Sonarr that are to be downloaded by yt-dlp"""
         series = self.get_series()
         matched = []
-        for ser in series[:]:
+        for sonarr_series in series:
             for wnt in self.series:
-                if normalize_title(wnt['title']) == normalize_title(ser['title']):
+                if normalize_title(wnt['title']) == normalize_title(sonarr_series['title']):
+                    ser = dict(sonarr_series)
                     # Merge service config before reading any keys (series overrides service)
                     wnt = self.merge_service_config(wnt)
+                    if wnt is None:
+                        continue
                     # Set default values
                     ser['subtitles'] = False
                     ser['playlistreverse'] = True
@@ -614,6 +656,11 @@ class StreamHarvester:
                     if 'regex' in wnt:
                         regex = wnt['regex']
                         if 'sonarr' in regex:
+                            validate_regex_replacement(
+                                regex['sonarr']['match'],
+                                regex['sonarr']['replace'],
+                                ser['title'],
+                            )
                             ser['sonarr_regex_match'] = regex['sonarr']['match']
                             ser['sonarr_regex_replace'] = regex['sonarr']['replace']
                         if 'site' in regex:
@@ -649,12 +696,15 @@ class StreamHarvester:
                         ser['playlistreverse'] = wnt['playlistreverse'] not in (
                             'false', 'False', False
                         )
-                    if 'subtitles' in wnt:
+                    subtitles = wnt.get('subtitles')
+                    if isinstance(subtitles, dict):
                         ser['subtitles'] = True
-                        if 'languages' in wnt['subtitles']:
-                            ser['subtitles_languages'] = wnt['subtitles']['languages']
-                        if 'autogenerated' in wnt['subtitles']:
-                            ser['subtitles_autogenerated'] = wnt['subtitles']['autogenerated']
+                        if 'languages' in subtitles:
+                            ser['subtitles_languages'] = subtitles['languages']
+                        if 'autogenerated' in subtitles:
+                            ser['subtitles_autogenerated'] = subtitles['autogenerated']
+                    elif subtitles in ('true', 'True', True):
+                        ser['subtitles'] = True
                     ser['url'] = wnt['url']
                     if not ser['monitored']:
                         logger.warning('%s is not currently monitored', ser['title'])
@@ -1078,10 +1128,10 @@ class StreamHarvester:
         return interval
 
 
-def main(playlist_cache=None, job=None):
+def main(playlist_cache=None, job=None, debug=False):
     """Run one scan of the configured series."""
     try:
-        client = StreamHarvester(playlist_cache)
+        client = StreamHarvester(playlist_cache, debug=debug)
     except (SystemExit, KeyError, TypeError, ValueError, OSError, yaml.YAMLError) as error:
         if job is None:
             raise
@@ -1129,6 +1179,7 @@ def main(playlist_cache=None, job=None):
 
 
 if __name__ == '__main__':
+    args = parse_args()
     if os.geteuid() == 0:
         logger.warning(
             'Container is running as root (uid 0). A future release will '
@@ -1139,9 +1190,9 @@ if __name__ == '__main__':
         )
     logger.info('Initial run')
     with closing(PlaylistCache()) as playlist_cache:
-        main(playlist_cache)
+        main(playlist_cache, debug=args.debug)
         job = schedule.every(int(SCANINTERVAL)).minutes
-        job.do(main, playlist_cache, job=job)
+        job.do(main, playlist_cache, job=job, debug=args.debug)
         while True:
             schedule.run_pending()
             time.sleep(1)

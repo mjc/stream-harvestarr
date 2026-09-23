@@ -38,6 +38,36 @@ class SeriesConfigValueTests(unittest.TestCase):
         self.client.series[0]['playlistreverse'] = 'false'
         self.assertFalse(self.client.filterseries()[0]['playlistreverse'])
 
+    def test_invalid_sonarr_replacement_rejects_configuration(self):
+        self.client.series[0]['regex'] = {
+            'sonarr': {'match': '(.*)', 'replace': r'\g<missing>'},
+        }
+        with self.assertRaises(ValueError):
+            self.client.filterseries()
+
+    def test_duplicate_configured_sources_keep_independent_series_data(self):
+        self.client.series.append({
+            'title': 'Show',
+            'url': 'https://www.youtube.com/@SecondShow',
+        })
+        matched = self.client.filterseries()
+        self.assertEqual(
+            [series['url'] for series in matched],
+            ['https://www.youtube.com/@Show', 'https://www.youtube.com/@SecondShow'],
+        )
+        self.assertIsNot(matched[0], matched[1])
+
+    def test_explicit_false_subtitles_override_service_defaults(self):
+        self.client.services = {
+            'provider': {
+                'title': 'provider',
+                'url': 'https://www.youtube.com',
+                'subtitles': {'languages': ['en']},
+            }
+        }
+        self.client.series[0].update(service='provider', subtitles='false')
+        self.assertFalse(self.client.filterseries()[0]['subtitles'])
+
 
 if __name__ == '__main__':
     unittest.main()
