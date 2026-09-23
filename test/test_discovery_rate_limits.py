@@ -51,6 +51,41 @@ class DiscoveryRateLimitTests(unittest.TestCase):
             with self.assertRaises(PlaylistRateLimitError):
                 app.PlaylistCache._extract({}, source)
 
+    def test_untitled_entry_is_not_extracted_individually(self):
+        source = 'https://www.patreon.com/creator'
+        entry = {
+            '_type': 'url',
+            'url': 'https://www.patreon.com/posts/episode-123',
+        }
+
+        class UntitledEntryYoutubeDL:
+            calls = []
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc_info):
+                return False
+
+            def extract_info(self, url, **kwargs):
+                self.calls.append(url)
+                if url == source:
+                    return {'_type': 'playlist', 'entries': [entry]}
+                raise AssertionError(f'unexpected per-entry extraction: {url}')
+
+            def process_ie_result(self, result, download=False):
+                return result
+
+        with patch.object(app.yt_dlp, 'YoutubeDL', return_value=UntitledEntryYoutubeDL()):
+            snapshot = app.PlaylistCache._extract({}, source)
+        self.addCleanup(snapshot.close)
+
+        self.assertEqual(UntitledEntryYoutubeDL.calls, [source])
+        self.assertEqual(
+            list(snapshot),
+            [{'title': None, 'url': 'https://www.patreon.com/posts/episode-123'}],
+        )
+
 
 if __name__ == '__main__':
     unittest.main()

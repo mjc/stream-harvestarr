@@ -779,6 +779,8 @@ class StreamHarvester:
             'extract_flat': 'in_playlist',
             'js_runtimes': JS_RUNTIMES,
         }
+        if getattr(self, 'sleep_requests', 0) > 0:
+            ytdlopts['sleep_interval_requests'] = self.sleep_requests
         if self.debug is True:
             ytdlopts.update(
                 {
@@ -809,7 +811,7 @@ class StreamHarvester:
             if not title_matches(entry, matchtitle, rules):
                 logger.debug('  Skipping title mismatch: %s', entry.get('title'))
                 continue
-            if not url or url == playlist:
+            if not url:
                 continue
             logger.debug('  Matched "%s"', entry.get('title'))
             return url
@@ -867,14 +869,14 @@ class StreamHarvester:
             ),
             'progress_hooks': [ytdl_hooks],
             'noplaylist': True,
-            'forceipv4': True,
+            'source_address': '0.0.0.0',
             'sleep_interval': 5,
             'max_sleep_interval': 30,
-            'nocontinue': True,
+            'continuedl': False,
             'nooverwrites': True,
-            'throttled_rate': '100K',
-            'concurrent_fragments': 5,
-            'audio_multistreams': True,
+            'throttledratelimit': 102400,
+            'concurrent_fragment_downloads': 5,
+            'allow_multiple_audio_streams': True,
             'js_runtimes': JS_RUNTIMES,
         }
         if self.sleep_requests > 0:
