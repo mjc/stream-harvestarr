@@ -1,6 +1,7 @@
 import argparse
 import collections
 import logging
+import math
 import os
 import re
 import sys
@@ -8,18 +9,21 @@ import time
 import urllib.parse
 from contextlib import closing
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 import requests
 import schedule
+import yaml
 import yt_dlp
 from pathutils import DEFAULT_ROOT_FOLDER, normalize_root_folder
 from playlists import PlaylistCache, entry_url, is_single_video, video_search_url
 from utils import (
     YoutubeDLLogger,
     checkconfig,
+    is_rate_limit_error,
     normalize_title,
     offsethandler,
+    redact_sensitive,
     setup_logging,
     upperescape,
     ytdl_hooks,
@@ -39,6 +43,7 @@ date_format = '%Y-%m-%dT%H:%M:%SZ'
 CONFIGFILE = os.environ['CONFIGPATH']
 CONFIGPATH = CONFIGFILE.replace('config.yml', '')
 SCANINTERVAL = 60
+SONARR_TIMEOUT = (10, 60)
 
 # yt-dlp needs a JavaScript runtime for YouTube extraction.  Prefer deno
 # (upstream default, installed on amd64/arm64 images) and fall back to
@@ -264,20 +269,17 @@ class StreamHarvester:
 
         # Stream Harvestarr Setup
         try:
-            self.set_scan_interval(self.config_section['scan_interval'])
-            try:
-                self.debug = self.config_section['debug'] in ['true', 'True']
-                if self.debug:
-                    logger.setLevel(logging.DEBUG)
-                    for handler in logger.handlers:
-                        if handler.name in ('FileHandler', 'StreamHandler'):
-                            handler.setLevel(logging.DEBUG)
-                    logger.debug('DEBUGGING ENABLED')
-            except AttributeError:
-                self.debug = False
+            self.scan_interval = self.set_scan_interval(self.config_section['scan_interval'])
+            self.debug = args.debug or self.config_section.get('debug') in ('true', 'True', True)
+            level = logging.DEBUG if self.debug else logging.INFO
+            logger.setLevel(level)
+            for handler in logger.handlers:
+                handler.setLevel(level)
             # Rate limiting configuration
             try:
                 self.download_delay = int(self.config_section.get('download_delay', 0))
+                if self.download_delay < 0:
+                    raise ValueError('download_delay must be non-negative')
                 if self.download_delay > 0:
                     logger.info(
                         'Download delay set to {} seconds between downloads'.format(
@@ -288,6 +290,8 @@ class StreamHarvester:
                 self.download_delay = 0
             try:
                 self.sleep_requests = int(self.config_section.get('sleep_requests', 0))
+                if self.sleep_requests < 0:
+                    raise ValueError('sleep_requests must be non-negative')
                 if self.sleep_requests > 0:
                     logger.info(
                         'Sleep requests set to {} seconds between API requests'.format(
@@ -298,6 +302,8 @@ class StreamHarvester:
                 self.sleep_requests = 0
             try:
                 self.rate_limit_sleep = int(self.config_section.get('rate_limit_sleep', 900))
+                if self.rate_limit_sleep < 0:
+                    raise ValueError('rate_limit_sleep must be non-negative')
                 logger.debug('Rate limit sleep set to {} seconds'.format(self.rate_limit_sleep))
             except (AttributeError, ValueError):
                 self.rate_limit_sleep = 900
@@ -314,11 +320,15 @@ class StreamHarvester:
                 self.backoff_enabled = True
             try:
                 self.backoff_multiplier = float(self.config_section.get('backoff_multiplier', 2.0))
+                if not math.isfinite(self.backoff_multiplier) or self.backoff_multiplier <= 0:
+                    raise ValueError('backoff_multiplier must be finite and positive')
                 logger.debug('Backoff multiplier set to {}'.format(self.backoff_multiplier))
             except (AttributeError, ValueError):
                 self.backoff_multiplier = 2.0
             try:
                 self.backoff_max = int(self.config_section.get('backoff_max', 3600))
+                if self.backoff_max < 0:
+                    raise ValueError('backoff_max must be non-negative')
                 logger.debug('Max backoff set to {} seconds'.format(self.backoff_max))
             except (AttributeError, ValueError):
                 self.backoff_max = 3600
@@ -340,8 +350,9 @@ class StreamHarvester:
                 logger.debug('Sonarr api set to v4')
             if cfg['sonarr']['ssl'].lower() == 'true':
                 scheme = 'https'
-            if cfg['sonarr'].get('basedir', ''):
-                basedir = '/' + cfg['sonarr'].get('basedir', '')
+            configured_basedir = cfg['sonarr'].get('basedir', '').strip('/')
+            if configured_basedir:
+                basedir = '/' + configured_basedir
 
             self.base_url = '{0}://{1}:{2}{3}'.format(
                 scheme, cfg['sonarr']['host'], str(cfg['sonarr']['port']), basedir
@@ -392,7 +403,7 @@ class StreamHarvester:
             sys.exit('Error with ytdl config.yml values.')
 
         # Sonarr's naming config controls zero-padding (e.g. Season {season:00}).
-        # Read it once at startup so downloaded paths match the user's media layout.
+        # Refresh it with each scan so paths follow Sonarr naming changes.
         # Format strings themselves are not logged: CodeQL flags any value derived
         # from a Sonarr API response as a potential credential leak (the request
         # carries apikey=), and the format string isn't worth a per-line suppression.
@@ -406,6 +417,13 @@ class StreamHarvester:
             logger.warning('Could not retrieve Sonarr naming config, defaulting to no padding')
             self.season_padding = 0
             self.episode_padding = 0
+
+        global SCANINTERVAL
+        if self.scan_interval != SCANINTERVAL:
+            SCANINTERVAL = self.scan_interval
+            logger.info('Scan interval set to every %s minutes by config.yml', self.scan_interval)
+        else:
+            logger.info('Default scan interval of every %s minutes in use', self.scan_interval)
 
     def get_naming_config(self):
         """Return Sonarr naming configuration including season folder format"""
@@ -474,8 +492,9 @@ class StreamHarvester:
             logger.debug('GET request with %d additional params', len(params))
             args.update(params)
         url = '{}?{}'.format(url, urllib.parse.urlencode(args))
-        res = requests.get(url)
-        return res
+        response = requests.get(url, timeout=SONARR_TIMEOUT)
+        response.raise_for_status()
+        return response
 
     def request_put(self, url, params=None, jsondata=None):
         """Wrapper on the requests.put"""
@@ -487,7 +506,9 @@ class StreamHarvester:
         if params is not None:
             args.update(params)
             logger.debug('PUT request params keys: {}'.format(list(params.keys())))
-        res = requests.post(url, headers=headers, params=args, json=jsondata)
+        res = requests.post(
+            url, headers=headers, params=args, json=jsondata, timeout=SONARR_TIMEOUT
+        )
         return res
 
     def rescanseries(self, series_id):
@@ -497,6 +518,7 @@ class StreamHarvester:
         res = self.request_put(
             '{}/{}/command'.format(self.base_url, self.sonarr_api_version), None, data
         )
+        res.raise_for_status()
         return res.json()
 
     def merge_service_config(self, wnt):
@@ -629,8 +651,9 @@ class StreamHarvester:
                     if 'format' in wnt:
                         ser['format'] = wnt['format']
                     if 'playlistreverse' in wnt:
-                        if wnt['playlistreverse'] == 'False':
-                            ser['playlistreverse'] = False
+                        ser['playlistreverse'] = wnt['playlistreverse'] not in (
+                            'false', 'False', False
+                        )
                     if 'subtitles' in wnt:
                         ser['subtitles'] = True
                         if 'languages' in wnt['subtitles']:
@@ -638,45 +661,49 @@ class StreamHarvester:
                         if 'autogenerated' in wnt['subtitles']:
                             ser['subtitles_autogenerated'] = wnt['subtitles']['autogenerated']
                     ser['url'] = wnt['url']
-                    matched.append(ser)
-        for check in matched:
-            if not check['monitored']:
-                logger.warning('{0} is not currently monitored'.format(ser['title']))
+                    if not ser['monitored']:
+                        logger.warning('%s is not currently monitored', ser['title'])
+                    else:
+                        matched.append(ser)
         del series[:]
         return matched
 
     def getseriesepisodes(self, series):
         """Return monitored episodes without an existing file for each series."""
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
         needed = []
-        for ser in series[:]:
-            episodes = self.get_episodes_by_series_id(ser['id'])
-            for eps in episodes[:]:
+        active_series = []
+        for ser in series:
+            episodes = []
+            for eps in self.get_episodes_by_series_id(ser['id']):
+                if not eps['monitored'] or eps['hasFile']:
+                    continue
                 eps_date = now
-                if 'airDateUtc' in eps:
-                    eps_date = datetime.strptime(eps['airDateUtc'], date_format)
+                if eps.get('airDateUtc'):
+                    eps_date = datetime.strptime(eps['airDateUtc'], date_format).replace(
+                        tzinfo=timezone.utc
+                    )
                     if 'offset' in ser:
                         eps_date = offsethandler(eps_date, ser['offset'])
-                if not eps['monitored']:
-                    episodes.remove(eps)
-                elif eps['hasFile']:
-                    episodes.remove(eps)
-                elif eps_date > now:
-                    episodes.remove(eps)
-                else:
-                    if 'sonarr_regex_match' in ser:
-                        match = ser['sonarr_regex_match']
-                        replace = ser['sonarr_regex_replace']
-                        eps['title'] = re.sub(match, replace, eps['title'])
-                    needed.append(eps)
+                if eps_date > now:
                     continue
-            if len(episodes) == 0:
-                logger.info('{0} no episodes needed'.format(ser['title']))
-                series.remove(ser)
-            else:
-                logger.info('{0} missing {1} episodes'.format(ser['title'], len(episodes)))
-                for i, episode in enumerate(episodes):
-                    logger.info('  {0}: {1} - {2}'.format(i + 1, ser['title'], episode['title']))
+                if 'sonarr_regex_match' in ser:
+                    eps = {
+                        **eps,
+                        'title': re.sub(
+                            ser['sonarr_regex_match'], ser['sonarr_regex_replace'], eps['title']
+                        ),
+                    }
+                episodes.append(eps)
+            if not episodes:
+                logger.info('%s no episodes needed', ser['title'])
+                continue
+            active_series.append(ser)
+            needed.extend(episodes)
+            logger.info('%s missing %d episodes', ser['title'], len(episodes))
+            for number, episode in enumerate(episodes, start=1):
+                logger.info('  %d: %s - %s', number, ser['title'], episode['title'])
+        series[:] = active_series
         return needed
 
     def start_scan(self, series=None):
@@ -935,6 +962,8 @@ class StreamHarvester:
             with yt_dlp.YoutubeDL(options) as ydl:
                 ydl.download([url])
         except yt_dlp.utils.DownloadError as error:
+            if self.is_rate_limit_error(error):
+                raise
             # yt-dlp wraps subtitle transport errors in a plain DownloadError;
             # there is no dedicated subtitle exception type. Fail closed if
             # its diagnostic changes, or subtitle downloading was not enabled.
@@ -961,10 +990,7 @@ class StreamHarvester:
     @staticmethod
     def is_rate_limit_error(error):
         """Return whether an error indicates rate limiting."""
-        message = str(error).lower()
-        return any(
-            marker in message for marker in ('rate-limited', 'rate limit', 'try again later')
-        )
+        return is_rate_limit_error(error)
 
     def handle_download_error(self, error, episode_number):
         """Log a download error and return whether the scan should stop."""
@@ -978,41 +1004,42 @@ class StreamHarvester:
 
         if self.is_rate_limit_error(error):
             self.rate_limit_count += 1
+            self.current_backoff = min(self.rate_limit_sleep, self.backoff_max)
             if self.backoff_enabled and self.rate_limit_count > 1:
-                self.current_backoff = min(
-                    int(
-                        self.rate_limit_sleep
-                        * (self.backoff_multiplier ** (self.rate_limit_count - 1))
-                    ),
-                    self.backoff_max,
-                )
-                logger.error(
-                    '      Failed - entry %d - RATE LIMITED (attempt %d)',
-                    episode_number,
-                    self.rate_limit_count,
-                )
-                logger.warning(
-                    '      Exponential backoff: Sleeping for %s seconds (%sm %ss)...',
-                    self.current_backoff,
-                    self.current_backoff // 60,
-                    self.current_backoff % 60,
-                )
-            else:
-                self.current_backoff = self.rate_limit_sleep
-                logger.error('      Failed - entry %d - RATE LIMITED', episode_number)
-                logger.warning(
-                    '      YouTube rate limit detected. Sleeping for %s seconds...',
-                    self.current_backoff,
-                )
+                try:
+                    self.current_backoff = min(
+                        int(
+                            self.rate_limit_sleep
+                            * (self.backoff_multiplier ** (self.rate_limit_count - 1))
+                        ),
+                        self.backoff_max,
+                    )
+                except OverflowError:
+                    self.current_backoff = self.backoff_max
+            logger.error(
+                '      Failed - entry %d - RATE LIMITED (attempt %d)',
+                episode_number,
+                self.rate_limit_count,
+            )
+            logger.warning(
+                '      Rate limit cooldown: sleeping for %s seconds', self.current_backoff
+            )
             time.sleep(self.current_backoff)
             logger.info('      Resuming downloads after rate limit cooldown')
         else:
-            logger.error('      Failed - entry %d - download error', episode_number)
+            logger.error(
+                '      Failed - entry %d - download error: %s',
+                episode_number,
+                redact_sensitive(str(error)),
+            )
         return False
 
     def download_episode(self, series, episode, episode_number):
         """Find and download one episode, returning whether the scan should stop."""
-        url = self.find_episode(series, episode)
+        try:
+            url = self.find_episode(series, episode)
+        except Exception as error:
+            return self.handle_download_error(error, episode_number)
         if url is None:
             logger.info('    %s: Missing - %s:', episode_number, episode['title'])
             return False
@@ -1021,17 +1048,22 @@ class StreamHarvester:
         options = self.download_options(series, episode)
         try:
             self.download_video(url, options, episode['title'])
-            self.rescanseries(series['id'])
         except Exception as error:
             return self.handle_download_error(error, episode_number)
-
+        try:
+            self.rescanseries(series['id'])
+        except Exception as error:
+            logger.warning(
+                '      Sonarr rescan failed after download: %s',
+                redact_sensitive(str(error)),
+            )
         logger.info('      Downloaded - %s', episode['title'])
         self.video_403_count = 0
-        if self.rate_limit_count > 0:
+        if getattr(self, 'rate_limit_count', 0) > 0:
             logger.info('      Rate limit recovered - resetting backoff counter')
             self.rate_limit_count = 0
             self.current_backoff = self.rate_limit_sleep
-        if self.download_delay > 0:
+        if getattr(self, 'download_delay', 0) > 0:
             logger.debug('      Waiting %s seconds before next download', self.download_delay)
             time.sleep(self.download_delay)
         return False
@@ -1057,25 +1089,63 @@ class StreamHarvester:
                     return
 
     def set_scan_interval(self, interval):
-        global SCANINTERVAL
-        if interval != SCANINTERVAL:
-            SCANINTERVAL = interval
-            logger.info('Scan interval set to every {} minutes by config.yml'.format(interval))
-        else:
-            logger.info('Default scan interval of every {} minutes in use'.format(interval))
-        return
+        interval = int(interval)
+        if interval <= 0:
+            raise ValueError('scan_interval must be positive')
+        try:
+            datetime.now() + timedelta(minutes=interval)
+        except OverflowError as error:
+            raise ValueError('scan_interval is too large') from error
+        return interval
 
 
-def main(playlist_cache=None):
+def main(playlist_cache=None, job=None):
     """Run one scan of the configured series."""
-    client = StreamHarvester(playlist_cache)
-    series = client.filterseries()
-    client.start_scan(series)
     try:
-        episodes = client.getseriesepisodes(series)
-        client.download(series, episodes)
-    finally:
-        client.playlist_cache.end_scan()
+        client = StreamHarvester(playlist_cache)
+    except (SystemExit, KeyError, TypeError, ValueError, OSError, yaml.YAMLError) as error:
+        if job is None:
+            raise
+        if isinstance(error, yaml.YAMLError):
+            detail = getattr(error, 'problem', None) or 'invalid YAML'
+            mark = getattr(error, 'problem_mark', None)
+            if mark is not None:
+                detail = f'{detail} at line {mark.line + 1}, column {mark.column + 1}'
+        else:
+            detail = redact_sensitive(str(error))
+        logger.error(
+            'Skipping scheduled scan because configuration is invalid (%s): %s',
+            type(error).__name__,
+            detail,
+        )
+        return
+    if job is not None:
+        job.interval = int(SCANINTERVAL)
+    try:
+        series = client.filterseries()
+        client.start_scan(series)
+        try:
+            episodes = client.getseriesepisodes(series)
+            client.download(series, episodes)
+        finally:
+            client.playlist_cache.end_scan()
+    except requests.RequestException as error:
+        if job is None:
+            raise
+        logger.warning(
+            'Skipping scheduled scan because Sonarr request failed: %s',
+            redact_sensitive(str(error)),
+        )
+        return
+    except (KeyError, TypeError, ValueError, OverflowError, re.error) as error:
+        if job is None:
+            raise
+        logger.error(
+            'Skipping scheduled scan because configuration is invalid (%s): %s',
+            type(error).__name__,
+            redact_sensitive(str(error)),
+        )
+        return
     logger.info('Waiting...')
 
 
@@ -1092,7 +1162,7 @@ if __name__ == '__main__':
     with closing(PlaylistCache()) as playlist_cache:
         main(playlist_cache)
         job = schedule.every(int(SCANINTERVAL)).minutes
-        job.do(main, playlist_cache)
+        job.do(main, playlist_cache, job=job)
         while True:
             schedule.run_pending()
             time.sleep(1)
